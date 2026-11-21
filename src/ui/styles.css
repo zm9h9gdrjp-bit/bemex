@@ -1,0 +1,134 @@
+/*
+ * Type: Barlow Condensed, bundled locally. A condensed grotesk reads fast at a
+ * glance mid-jump, keeps long German/Portuguese labels narrow, and has true
+ * tabular figures for timers and speed. Two weights only: 600 and 700.
+ *
+ * Colour: neutral greys plus one accent (amber), used only for the thing that
+ * matters right now: a perfect landing, the active control, the current value.
+ */
+:root {
+  --ink: #f4f1ea;
+  --ink-2: #b9b4aa;
+  --ink-3: #8a857c;
+  --panel: rgba(22, 23, 24, 0.86);
+  --panel-line: rgba(255, 255, 255, 0.09);
+  --accent: #ffb000;
+  --danger: #ff6a55;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+  --font: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: #1b1d1f; color: var(--ink);
+  font-family: var(--font); font-weight: 600;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none; -webkit-user-select: none;
+  touch-action: none;
+}
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; }
+#hud { position: fixed; inset: 0; pointer-events: none; }
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* Top-left: speed and checkpoint. Not a card: a slim strip with a hairline. */
+.hud-tl {
+  position: absolute; top: max(var(--s3), env(safe-area-inset-top)); left: max(var(--s3), env(safe-area-inset-left));
+  display: flex; align-items: baseline; gap: var(--s3);
+  padding: var(--s1) var(--s3) var(--s1) var(--s2);
+  background: var(--panel); border-left: 3px solid var(--accent); border-radius: 2px;
+}
+.hud-speed { font-size: 30px; font-weight: 700; line-height: 1; min-width: 2.2ch; text-align: right; }
+.hud-unit { font-size: 13px; color: var(--ink-2); letter-spacing: 0.04em; }
+.hud-cp { font-size: 15px; color: var(--ink-2); padding-left: var(--s3); border-left: 1px solid var(--panel-line); }
+.hud-cp b { color: var(--ink); font-weight: 700; }
+
+.hud-time {
+  position: absolute; top: max(var(--s3), env(safe-area-inset-top)); right: max(var(--s4), env(safe-area-inset-right));
+  font-size: 22px; font-weight: 700; color: var(--ink);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.5);
+}
+.hud-time small { display: block; text-align: right; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+
+/* Landing call-out: upper third, slightly left of centre so it doesn't sit on the rider's path. */
+.hud-pop {
+  position: absolute; top: 22%; left: 44%; transform: translateX(-50%);
+  text-align: center; opacity: 0; transition: opacity 120ms linear;
+}
+.hud-pop.show { opacity: 1; }
+.hud-pop .big {
+  font-size: 46px; font-weight: 700; letter-spacing: 0.02em; line-height: 1;
+  color: var(--ink); text-shadow: 0 2px 0 rgba(0,0,0,0.55);
+}
+.hud-pop.perfect .big { color: var(--accent); }
+.hud-pop.crash .big { color: var(--danger); }
+.hud-pop .small { margin-top: var(--s1); font-size: 16px; color: var(--ink); text-shadow: 0 1px 0 rgba(0,0,0,0.6); }
+
+.hud-pump {
+  position: absolute; bottom: 30%; left: 24%;
+  font-size: 22px; font-weight: 700; color: var(--ink); opacity: 0;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.6); transition: opacity 100ms linear;
+}
+.hud-pump.show { opacity: 1; }
+
+.hud-banner {
+  position: absolute; left: 0; right: 0; top: 38%;
+  display: none; justify-content: center;
+}
+.hud-banner.show { display: flex; }
+.hud-banner div {
+  background: var(--panel); padding: var(--s2) var(--s4); border-radius: 2px;
+  font-size: 18px; display: flex; gap: var(--s3); align-items: baseline;
+}
+.hud-banner .why { color: var(--ink-2); font-size: 15px; }
+
+/* Debug readout. Monospace-ish via tabular nums; fixed widths so values don't jump. */
+.hud-debug {
+  position: absolute; left: max(var(--s3), env(safe-area-inset-left)); top: 64px;
+  background: var(--panel); padding: var(--s2) var(--s3); border-radius: 2px;
+  font-size: 14px; line-height: 1.35; display: none; min-width: 200px;
+}
+.hud-debug.show { display: block; }
+.hud-debug dl { margin: 0; display: grid; grid-template-columns: auto 1fr; column-gap: var(--s3); }
+.hud-debug dt { color: var(--ink-3); }
+.hud-debug dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.hud-debug canvas { display: block; margin-top: var(--s2); width: 200px; height: 36px; }
+
+.hud-help {
+  position: absolute; left: max(var(--s3), env(safe-area-inset-left)); bottom: var(--s3);
+  font-size: 14px; color: var(--ink); display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4);
+  max-width: 70%; text-shadow: 0 1px 0 rgba(0,0,0,0.6);
+}
+.hud-help kbd {
+  font-family: var(--font); font-weight: 700; font-size: 13px;
+  padding: 0 5px; border: 1px solid rgba(255,255,255,0.35); border-radius: 3px; margin-right: 4px;
+  background: rgba(0,0,0,0.35);
+}
+
+/* Touch controls. Large targets, thumbs at the bottom corners. */
+.touch { position: absolute; inset: 0; pointer-events: none; display: none; }
+.touch.on { display: block; }
+.tbtn {
+  position: absolute; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center; flex-direction: column;
+  border-radius: 50%; border: 2px solid rgba(255,255,255,0.55);
+  background: rgba(20,20,20,0.38); color: var(--ink);
+  font-size: 14px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.tbtn svg { width: 34px; height: 34px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.tbtn.down { background: rgba(255,176,0,0.85); border-color: var(--accent); color: #1b1d1f; }
+.tbtn.lean-back { left: max(20px, env(safe-area-inset-left)); bottom: 28px; width: 96px; height: 96px; }
+.tbtn.lean-fwd  { left: calc(max(20px, env(safe-area-inset-left)) + 112px); bottom: 52px; width: 96px; height: 96px; }
+.tbtn.pedal { right: max(20px, env(safe-area-inset-right)); bottom: 24px; width: 118px; height: 118px; }
+.tbtn.jump  { right: calc(max(20px, env(safe-area-inset-right)) + 132px); bottom: 92px; width: 80px; height: 80px; }
+.tbtn.pump  { right: calc(max(20px, env(safe-area-inset-right)) + 132px); bottom: 4px; width: 80px; height: 80px; }
+
+@media (max-height: 420px) {
+  .hud-pop .big { font-size: 36px; }
+  .hud-help { display: none; }
+}
+@media (pointer: coarse) {
+  .hud-help { display: none; }
+}
