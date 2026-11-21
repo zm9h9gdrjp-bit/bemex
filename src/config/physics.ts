@@ -97,6 +97,10 @@ export const CAMERA = {
   /** Rider sits in the left third: offset of the camera center ahead of the rider, as a fraction of view width. */
   riderScreenX: 0.3,
   riderScreenY: 0.58,
+  /** Short landscape phone screens: tighter view, rider raised above the thumb buttons. */
+  compactBelowPx: 520,
+  compactViewHeight: 15.5,
+  compactRiderScreenY: 0.47,
   followLerp: 7,
   zoomLerp: 2.2,
   shakeDecay: 6,

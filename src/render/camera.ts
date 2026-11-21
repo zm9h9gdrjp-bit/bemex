@@ -45,7 +45,10 @@ export class Camera {
     const k = instant ? 1 : 1 - Math.exp(-CAMERA.zoomLerp * dt);
     this.zoom += (targetZoom - this.zoom) * k;
 
-    const viewH = CAMERA.baseViewHeight * this.zoom / this.punch;
+    const compact = this.viewH < CAMERA.compactBelowPx;
+    const base = compact ? CAMERA.compactViewHeight : CAMERA.baseViewHeight;
+    const riderY = compact ? CAMERA.compactRiderScreenY : CAMERA.riderScreenY;
+    const viewH = base * this.zoom / this.punch;
     this.scale = this.viewH / viewH;
     const viewWm = this.viewW / this.scale;
 
@@ -54,7 +57,7 @@ export class Camera {
 
     // Rider at riderScreenX of the width, riderScreenY from the top.
     const tx = target.x + this.lookAhead + viewWm * (0.5 - CAMERA.riderScreenX);
-    const ty = target.y + viewH * (CAMERA.riderScreenY - 0.5) * 0.8 + Math.min(4, heightAboveGround * 0.3);
+    const ty = target.y + viewH * (riderY - 0.5) * 0.8 + Math.min(4, heightAboveGround * 0.3);
     const f = instant ? 1 : 1 - Math.exp(-CAMERA.followLerp * dt);
     this.x += (tx - this.x) * f;
     // Vertical follow is looser so rollers don't bounce the frame.

@@ -132,3 +132,38 @@ html, body {
 @media (pointer: coarse) {
   .hud-help { display: none; }
 }
+
+/* ---- Phone chrome ---- */
+html, body { overscroll-behavior: none; -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
+
+.rotate {
+  position: fixed; inset: 0; z-index: 10; pointer-events: auto;
+  display: none; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2);
+  background: #1b1d1f; color: var(--ink); text-align: center; padding: var(--s5);
+}
+.rotate.show { display: flex; }
+.rotate svg { width: 72px; height: 72px; fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; margin-bottom: var(--s2); }
+.rotate b { font-size: 26px; font-weight: 700; }
+.rotate span { font-size: 16px; color: var(--ink-2); }
+
+/* Restart / data, under the timer. Touch only. */
+.mbar {
+  position: absolute; display: none; gap: var(--s2);
+  top: calc(max(var(--s3), env(safe-area-inset-top)) + 34px);
+  right: max(var(--s4), env(safe-area-inset-right));
+}
+.mbar button {
+  pointer-events: auto; font: inherit; color: var(--ink);
+  display: flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 0 var(--s3);
+  background: var(--panel); border: 0; border-radius: 2px; font-size: 15px;
+}
+.mbar svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+@media (pointer: coarse) { .mbar { display: flex; } }
+@media (max-height: 420px) {
+  .hud-debug { top: 56px; font-size: 12px; line-height: 1.2; padding: var(--s1) var(--s2); min-width: 170px; }
+  .hud-debug canvas { display: none; }
+}
+@media (pointer: coarse) {
+  .hud-debug { left: 50%; top: max(var(--s2), env(safe-area-inset-top)); transform: translateX(-50%); }
+}

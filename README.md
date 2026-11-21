@@ -12,6 +12,16 @@ npm run build      # build de produção em dist/
 npm run typecheck
 ```
 
+## Jogar no iPhone
+
+A cada push, o workflow `.github/workflows/pages.yml` gera o build e publica na branch `gh-pages`.
+
+1. Uma vez só: no GitHub, **Settings → Pages → Build and deployment → Source: Deploy from a branch**, branch `gh-pages`, pasta `/ (root)`, **Save**.
+2. Abra https://zm9h9gdrjp-bit.github.io/bemex/ no Safari.
+3. Para tela cheia na horizontal: botão Compartilhar → **Adicionar à Tela de Início**, e abra pelo ícone.
+
+No celular: **Trás / Frente** inclinam (no chão e no ar), **Pedal** acelera, **Pulo** (segure para carregar), **Pump** na descida. **Reiniciar** e **Dados** ficam no canto superior direito. Em retrato o jogo pausa e pede para girar.
+
 ## Estado atual: Milestone 1, protótipo de física
 
 - Bike com quadro + 2 rodas em wheel joints com suspensão (mola e amortecimento ajustados pela massa suspensa).

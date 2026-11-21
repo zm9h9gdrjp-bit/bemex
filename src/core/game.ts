@@ -14,6 +14,7 @@ import { DebugDraw } from '../render/debugDraw';
 import { SpeedLines } from '../render/speedLines';
 import { Hud } from '../ui/hud';
 import { TouchControls } from '../ui/touch';
+import { MobileChrome } from '../ui/mobile';
 
 /**
  * Milestone 1 game: one rider on a test track. Owns the physics world, the
@@ -41,6 +42,7 @@ export class Game {
   private crashedAt = 0;
   /** Simulation speed multiplier (dev slow-mo, later trick slow-mo). */
   timeScale = 1;
+  paused = false;
 
   constructor(private app: Application, track: TrackData, hudRoot: HTMLElement) {
     this.world = new World({ gravity: new Vec2(0, PHYSICS.gravity) });
@@ -58,6 +60,7 @@ export class Game {
 
     this.hud = new Hud(hudRoot);
     new TouchControls(hudRoot);
+    new MobileChrome(hudRoot, (p) => { this.paused = p; });
     this.hud.setCheckpoint(0, this.terrain.checkpoints.length - 1);
 
     this.resize();
@@ -103,6 +106,8 @@ export class Game {
     if (Input.pressed('debugDraw')) this.debugDraw.enabled = !this.debugDraw.enabled;
     if (Input.pressed('debugInfo')) this.hud.toggleDebug();
     if (Input.pressed('respawn')) this.restart();
+    // Portrait on a phone (rotate prompt showing) or tab hidden: freeze the sim.
+    if (this.paused) { this.accumulator = 0; return; }
 
     const dt = Math.min(0.1, realDt) * this.timeScale;
     const step = 1 / PHYSICS.stepHz;
