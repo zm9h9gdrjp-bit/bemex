@@ -37,6 +37,12 @@ export const BIKE = {
   /** Torso posture: rotational spring between rider body and frame (N·m/rad, N·m·s/rad). */
   postureStiffness: 2600,
   postureDamping: 120,
+  /** Air reflex with no lean input: bike levelled under the body toward the slope this far ahead (s). */
+  airLevelLookahead: 0.3,
+  /** Largest bike-vs-body twist the rider uses for that (rad). */
+  airLevelMax: 0.6,
+  /** Deepest crouch: hip height above the bottom bracket where the knees bottom out (m). */
+  minHipHeight: 0.42,
   /** Hip bob while sprinting (legs spring length modulated with the crank). */
   pedalBobAmount: 0.025, // m of hip bob while sprinting
 
@@ -47,39 +53,61 @@ export const BIKE = {
   /** Rear-wheel drive while pedalling (only with the rear wheel on the ground). */
   topSpeed: 17, // m/s on flat ground
   pedalTorque: 90, // N·m
+  /** Pedal effort fades out between these nose-up angles (deg vs the ground). */
+  pedalEaseFrom: 4,
+  pedalEaseTo: 14,
   /** Rider shifts forward over the bars while sprinting (adds to lean, -1…1 scale). */
-  sprintLean: 0.45,
+  sprintLean: 0.6,
+  /** How fast the rider moves to a new lean position (1/s). */
+  leanRate: 8,
   /** Crank spin rate when pedalling with the wheel off the ground (visual only). */
   airCrankRate: 9, // rad/s
 
-  /** Rider's own balance on the ground when not leaning: PD pull toward the slope angle. */
+  /**
+   * Balance on the ground is the rider's own effort, never an outside force:
+   * a weight-shift reflex (lean per radian of pitch vs the ground, and per rad/s)
+   * plus arm torque on the bars (equal and opposite on rider and bike).
+   */
+  balanceLeanKp: 3,
+  balanceLeanKd: 0.35,
   balanceKp: 520,
   balanceKd: 60,
   balanceMaxTorque: 420,
-  /** Ground weight shift (manual / nose manual): bar pull torque on top of moving the rider body. */
+  /** Bar pull (lean back) / push (lean forward) torque while a lean button is held. */
   groundLeanTorque: 230,
-  /** Air rotation control (applied to the whole bike + rider about the shared centre of mass). */
+  /** Air rotation control (whole bike + rider about the shared centre of mass; speed untouched). */
   airSpinRate: 7.2, // rad/s max ≈ 1.15 rotations per second
   airSpinAccel: 26, // rad/s²
   /** Released lean in the air: rotation keeps some momentum and bleeds off at this rate. */
   airAngularDamping: 1.6,
-  /** Aerodynamic drag coefficient: F = k·v². ~0.3 m/s² deceleration at top speed. */
-  airDrag: 0.08,
 
   /** Brake torque per wheel (after the finish line), N·m. */
   brakeTorque: 60,
 
-  /** Bunny hop: impulse along the ground normal, scaled by charge. */
-  hopMinSpeed: 3.2,
-  hopMaxSpeed: 6.2,
+  /**
+   * Bunny hop: crouch while held, then on release the legs push the bike into the
+   * ground (push) and the arms/legs lift it after the rider (pull). Internal forces, N.
+   */
   hopChargeTime: 0.35,
+  hopPushTime: 0.14,
+  hopPullTime: 0.12,
+  hopPushForce: 2600,
+  hopPullForce: 1500,
+  /** Share of the pull applied at the bars (lifts the front first, like a real hop). */
+  hopBarsShare: 0,
+  /** While hopping or pumping the legs stiffen by this factor and move at this rate (1/s). */
+  legActionStiffness: 2,
+  /** Hop legs snap (fast); pump legs extend over the hold so the push spans the trough. */
+  hopLegRate: 16,
+  pumpLegRate: 5,
 
-  /** Pump: down on the back side of a roller adds speed, on the up side costs speed. */
-  pumpImpulse: 1.6, // m/s along travel
-  pumpPenalty: 0.6, // m/s lost when pumping uphill
-  pumpCooldown: 0.45,
-  pumpMinDescent: 0.9, // m/s of vertical speed that counts as "downhill"/"uphill"
-  pumpDownForce: 380, // N pressed into the ground while holding down
+  /** Pump: holding extends the legs (with a short push), releasing absorbs for a moment. */
+  pumpForce: 900,
+  pumpPushTime: 0.18,
+  pumpAbsorbTime: 0.35,
+  pumpAbsorbTuck: 0.8,
+  /** Vertical speed that counts as "on the way down/up" for the PUMP feedback. */
+  pumpMinDescent: 0.9,
 };
 
 export const LANDING = {
@@ -91,14 +119,10 @@ export const LANDING = {
   goodAngle: 25,
   /** Beyond this angle at touchdown the bike is upside down / vertical: crash. */
   maxLandingAngle: 75,
-  perfectBoost: 2.6, // m/s along the ground
-  goodBoost: 0.8,
-  sloppySpeedKeep: 0.8,
   wobbleTime: 0.45,
-  /** Impact speed perpendicular to the ground. Above `case`: hard thud and speed loss. Above `crash`: crash. */
+  /** Impact speed perpendicular to the ground. Above `case`: hard landing (wobble). Above `crash`: crash. */
   caseImpactVelocity: 9,
   crashImpactVelocity: 18,
-  caseSpeedKeep: 0.7,
 };
 
 export const MANUAL = {
@@ -107,17 +131,6 @@ export const MANUAL = {
   /** Past these the rider steps off the back / goes over the bars. */
   wheelieTipAngle: 80,
   noseTipAngle: 70,
-  /** Share of gravity's tipping moment cancelled while on one wheel (1 = fully, arcade manual). */
-  gravityAssist: 1,
-  /** Share of pitch rate removed when touching down on one wheel. */
-  landingSpinAbsorb: 0.9,
-  /** Then for this long the rider keeps damping pitch at this rate (1/s). */
-  absorbTime: 0.3,
-  absorbRate: 14,
-  /** With no input, extra pull toward both wheels per radian of manual angle (N·m/rad). */
-  settleStiffness: 450,
-  /** Extra pitch damping while on one wheel. */
-  dampingScale: 3,
   /** Balance point shown on the meter. */
   wheelieBalanceAngle: 38,
   noseBalanceAngle: 28,
@@ -128,8 +141,6 @@ export const CRASH = {
   /** After this, pressing pedal or jump respawns immediately. */
   skipAfter: 0.35,
   fadeTime: 0.25,
-  /** Speed given to the rider when respawning at a checkpoint. */
-  respawnSpeed: 9,
   /** Checkpoint spacing as a fraction of track length. */
   checkpointEvery: 0.15,
 };

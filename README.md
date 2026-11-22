@@ -43,13 +43,24 @@ No celular: polegar esquerdo com **Pedal** embaixo e **Trás / Frente** logo aci
 | A / Q (ou ←) | Inclinar para trás · mortal para trás no ar |
 | E / F | Inclinar para frente · mortal para frente no ar |
 | ↑ / W | Bunny hop (segure para carregar) |
-| ↓ / S | Pump (na descida ganha, na subida perde) |
+| ↓ / S | Pump: segure no fundo da descida, solte na crista (no ar: agacha para o pouso) |
 | F2 / F3 / F4 / F6 | Colisores · dados · sensores de queda · câmera lenta |
 | R | Voltar à largada |
 
+## Física sem ajudas artificiais
+
+Nenhuma velocidade é somada ou tirada diretamente. Tudo vem de forças reais:
+
+- **Pump:** segurar ↓ estica as pernas e empurra a bike contra o chão; soltar recolhe. Esticando no fundo da transição e recolhendo na crista, a reação do chão acelera a bike (≈ +0,9 m/s numa sequência de rollers); no tempo errado ela perde (≈ −1,5 m/s).
+- **Bunny hop:** agacha enquanto segura ↑, ao soltar as pernas empurram a bike contra o chão e depois puxam ela para cima. Roda traseira sobe 25–47 cm conforme a carga.
+- **Pouso:** perfeito ou torto é só a classificação; a velocidade que sobra é a que o contato deixa. Sem impulso de pouso perfeito.
+- **Equilíbrio:** no chão o piloto desloca o peso e trabalha no guidão (forças internas entre piloto e bike). No ar, sem comando, ele nivela a bike embaixo do corpo. O giro de mortal no ar continua sendo controle de jogo, mas não muda velocidade nem trajetória.
+- **Resistência:** só atrito de rolamento do pneu (por superfície); sem arrasto do ar.
+- **Respawn** parado no checkpoint, que sempre tem ~20 m de embalo.
+
 ## Atualização v2, parte A (A1, A2, A4)
 
-- **Quedas só quando:** o corpo do piloto toca o chão (sensores de cabeça, tronco, quadril, mãos e joelhos), impacto perpendicular acima de 18 m/s, pouso no meio da manobra, ou ângulo acima de ±75°. Pousar numa roda só vira manual / nose manual com medidor de equilíbrio; passar de 80° para trás ou 70° para frente derruba. Pouso duro (acima de 9 m/s) perde velocidade sem cair.
+- **Quedas só quando:** o corpo do piloto toca o chão (sensores de cabeça, tronco, quadril, mãos e joelhos), impacto perpendicular acima de 18 m/s, pouso no meio da manobra, ou ângulo acima de ±75°. Pousar numa roda só vira manual / nose manual com medidor de equilíbrio; com a física pura, até ~30° o piloto recupera, mais que isso o peso já passou do eixo e cai. Pouso duro (acima de 9 m/s) perde velocidade sem cair.
 - **Piloto como corpo separado** (65 kg) preso à bike (11 kg, rodas de 1 kg) por molas: pernas e braços absorvem o pouso e a inclinação move o peso de verdade.
 - **Pedalada para frente** pela relação 25/9, pedivelas niveladas ao soltar, pés presos aos pedais por IK, joelhos para frente.
 - **Geometria de BMX 20"**, 36 raios, coroa, catraca e corrente animada; renderização interpolada a 120 Hz de física.

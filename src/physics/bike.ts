@@ -1,7 +1,5 @@
 import { World, Vec2, Box, Circle, Polygon, WheelJoint, DistanceJoint, type Body } from 'planck';
-import { BIKE, LANDING, CRASH, MANUAL, PHYSICS } from '../config/physics';
-
-const PHYSICS_G = PHYSICS.gravity; // negative (y-up)
+import { BIKE, LANDING, CRASH, MANUAL } from '../config/physics';
 import { CAT, MASK } from './collision';
 import { SURFACE_DRAG, type Terrain, type Vec, type FixtureTag, type BodyPart } from './terrain';
 import { classifyLanding, wrapAngle, type LandingQuality, type CrashCause } from './landing';
@@ -102,9 +100,13 @@ export class Bike {
   private hopCharge = 0;
   private prevJump = false;
   private prevPump = false;
-  private pumpCooldown = 0;
-  /** After a one-wheel touchdown the rider keeps soaking up pitch for a moment. */
-  private absorbTimer = 0;
+  /** Remaining time of the current leg push (pump) and hop push+pull. */
+  private pumpPhase = 0;
+  private hopPhase = 0;
+  private hopPower = 0;
+  private absorbPhase = 0;
+  /** Planck distance-joint frequency scale for the rider's mass (see build). */
+  private limbScale = 1;
   private braking = false;
   crashTimer = 0;
   crashes = 0;
@@ -126,7 +128,9 @@ export class Bike {
     const w = this.world;
     const tag = (kind: FixtureTag['kind'], extra: Partial<FixtureTag> = {}): FixtureTag => ({ kind, owner: this.id, ...extra });
     const filter = { filterCategoryBits: CAT.BIKE, filterMaskBits: MASK.BIKE };
-    const sensor = { ...filter, isSensor: true, density: 0 };
+    // Body parts carry the rider's mass but never collide (mask 0): their ground contact
+    // is checked geometrically each step in checkBodyContact().
+    const sensor = { filterCategoryBits: CAT.BIKE, filterMaskBits: 0, isSensor: true, density: 0 };
 
     // Frame: a slim polygon from the rear axle to the head tube.
     this.frame = w.createDynamicBody({ position: new Vec2(x, y) });
@@ -190,6 +194,7 @@ export class Bike {
     const mR = this.rider.getMass(), mF = this.frame.getMass();
     const mRed = 1 / (1 / mR + 1 / mF);
     const scale = Math.sqrt(mR / mRed);
+    this.limbScale = scale;
     const limb = (anchorFrame: Vec, anchorRider: Vec, hz: number, damping: number) =>
       w.createJoint(new DistanceJoint(
         { frequencyHz: hz * scale, dampingRatio: damping * scale },
@@ -236,6 +241,35 @@ export class Bike {
     if (!this.pendingCrash) this.pendingCrash = reason;
   }
 
+  /** Head, torso, hips, hands or knees touching the ground (or pit) ends the run. */
+  private checkBodyContact(): void {
+    for (const body of [this.rider, this.frame]) {
+      for (let f = body.getFixtureList(); f; f = f.getNext()) {
+        const tag = f.getUserData() as FixtureTag | null;
+        if (!tag?.part) continue;
+        const shape = f.getShape();
+        if (shape instanceof Circle) {
+          const c = body.getWorldPoint(shape.getCenter());
+          if (this.terrain.touches(c, shape.getRadius())) { this.bodyHit(tag.part, c); return; }
+        } else {
+          const verts = (shape as unknown as { m_vertices: Vec2[]; m_count: number });
+          for (let i = 0; i < verts.m_count; i++) {
+            const a = body.getWorldPoint(verts.m_vertices[i]);
+            const b = body.getWorldPoint(verts.m_vertices[(i + 1) % verts.m_count]);
+            for (const t of [0, 0.5]) {
+              const q = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+              if (this.terrain.touches(q, 0.01)) { this.bodyHit(tag.part, q); return; }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private bodyHit(part: BodyPart, at: Vec): void {
+    this.requestCrash(at.y <= this.terrain.pitY + 0.3 ? { kind: 'pit' } : { kind: 'body', part });
+  }
+
   /** Recounts touching ground contacts per wheel straight from Planck (no drift from missed events). */
   private refreshContacts(): void {
     const count = (b: Body) => {
@@ -271,11 +305,6 @@ export class Bike {
     const v = this.frame.getLinearVelocity();
     const impact = -(-Math.sin(slope) * v.x + Math.cos(slope) * v.y);
     const angleDiff = wrapAngle(this.frame.getAngle() - slope);
-    // Steep one-wheel touchdown: start absorbing right away, not after the two-wheel window.
-    if (Math.abs(angleDiff) * (180 / Math.PI) > LANDING.goodAngle && Math.abs(angleDiff) * (180 / Math.PI) <= LANDING.maxLandingAngle) {
-      this.addSpin(-this.frame.getAngularVelocity() * MANUAL.landingSpinAbsorb);
-      this.absorbTimer = MANUAL.absorbTime;
-    }
     this.landing = {
       t: this.time,
       angleDiff,
@@ -302,33 +331,59 @@ export class Bike {
     this.debug.lastQuality = res.quality;
     this.events.push({ type: 'landing', quality: res.quality, airtime: l.airtime, rotation: l.rotation, angleDiffDeg: deg, impact: l.impact, cased: res.cased });
 
-    const slope = this.slopeUnderBike();
-    const along = (dv: number) => this.addVelocity(Math.cos(slope) * dv, Math.sin(slope) * dv);
+    // No speed is added or removed here: what a landing costs or keeps is decided by the
+    // contact physics (angle vs slope, impact absorbed by tires and legs).
     if (res.quality === 'crash') {
       this.requestCrash({ kind: 'landing', cause: res.cause!, impact: l.impact, angleDeg: deg });
       return;
     }
-    if (res.cased) this.scaleVelocity(LANDING.caseSpeedKeep);
-    // One-wheel touchdown: the rider soaks up most of the pitch so it rolls into a manual.
-    if (res.quality === 'wheelie' || res.quality === 'nose') {
-      this.addSpin(-this.frame.getAngularVelocity() * MANUAL.landingSpinAbsorb);
-      this.absorbTimer = MANUAL.absorbTime;
-    }
-    if (res.quality === 'perfect') along(LANDING.perfectBoost);
-    else if (res.quality === 'good' && !res.cased) along(LANDING.goodBoost);
-    else if (res.quality === 'sloppy') { this.scaleVelocity(LANDING.sloppySpeedKeep); this.wobble = 1; }
+    if (res.quality === 'sloppy' || res.cased) this.wobble = 1;
   }
 
-  private addVelocity(dx: number, dy: number): void {
-    for (const b of this.bodies()) {
-      const v = b.getLinearVelocity();
-      b.setLinearVelocity(new Vec2(v.x + dx, v.y + dy));
-    }
+  /**
+   * Internal "muscle" force between rider and bike, acting along the leg line
+   * (rider's centre of mass ↔ bottom bracket), or the arm line (↔ grips) for
+   * `barsShare`. Positive pushes them apart (legs extending), negative pulls the
+   * bike up toward the rider. Equal, opposite and collinear: no net force and no
+   * net torque on the system; any speed or height comes from the ground pushing back.
+   */
+  private muscle(force: number, barsShare = 0): void {
+    const rc = this.rider.getWorldCenter();
+    const apply = (localPt: Vec, f: number) => {
+      if (f === 0) return;
+      const pt = this.frame.getWorldPoint(new Vec2(localPt.x, localPt.y));
+      const d = new Vec2(rc.x - pt.x, rc.y - pt.y);
+      const len = d.length() || 1;
+      d.mul(1 / len);
+      this.rider.applyForceToCenter(d.clone().mul(f), true);
+      this.frame.applyForce(d.clone().mul(-f), pt, true);
+    };
+    apply(GEOM.bottomBracket, force * (1 - barsShare));
+    apply(GEOM.grips, force * barsShare);
   }
 
-  private scaleVelocity(k: number): void {
-    for (const b of this.bodies()) b.setLinearVelocity(b.getLinearVelocity().clone().mul(k));
+  /** Rider pulling (+) or pushing (-) on the bars: equal and opposite torque on bike and rider. */
+  private barTorque(tq: number): void {
+    this.frame.applyTorque(tq, true);
+    this.rider.applyTorque(-tq, true);
   }
+
+  private bottomOut(): void {
+    const hipLocal = this.frame.getLocalPoint(this.rider.getPosition());
+    const minHip = GEOM.bottomBracket.y + BIKE.minHipHeight;
+    if (hipLocal.y > minHip) return;
+    const a = this.frame.getAngle();
+    const up = new Vec2(-Math.sin(a), Math.cos(a));
+    const vr = Vec2.dot(this.rider.getLinearVelocity(), up);
+    const vf = Vec2.dot(this.frame.getLinearVelocityFromWorldPoint(this.rider.getPosition()), up);
+    const closing = vf - vr; // > 0 when the rider is still sinking into the bike
+    if (closing <= 0) return;
+    const mR = this.rider.getMass(), mF = this.frame.getMass();
+    const j = closing * (mR * mF) / (mR + mF);
+    this.rider.applyLinearImpulse(up.clone().mul(j), this.rider.getWorldCenter(), true);
+    this.frame.applyLinearImpulse(up.clone().mul(-j), this.rider.getPosition(), true);
+  }
+
 
   /** Total mass and centre of mass of bike + rider. */
   private system(): { mass: number; com: Vec } {
@@ -375,9 +430,15 @@ export class Bike {
 
     // ---- Pedalling. Drive only reaches the ground through the rear tire.
     this.pedalling = c.pedal;
-    if (c.pedal && rearDown) {
-      this.rearJoint.enableMotor(true);
-      this.rearJoint.setMaxMotorTorque(BIKE.pedalTorque * t.pedalTorque);
+    if (this.braking) {
+      // handled below
+    } else if (c.pedal && rearDown) {
+      // A rider eases off the pedals as the front comes up (unless they're pulling a
+      // manual on purpose), the same way you stop pushing when a sprint starts to wheelie.
+      const nose = (wrapAngle(this.frame.getAngle() - this.slopeUnderBike()) * 180) / Math.PI;
+      const ease = c.leanBack ? 1 : Math.max(0, Math.min(1, 1 - (nose - BIKE.pedalEaseFrom) / (BIKE.pedalEaseTo - BIKE.pedalEaseFrom)));
+      this.rearJoint.enableMotor(ease > 0);
+      this.rearJoint.setMaxMotorTorque(BIKE.pedalTorque * t.pedalTorque * ease);
       this.rearJoint.setMotorSpeed(-(BIKE.topSpeed * t.topSpeed) / BIKE.wheelRadius);
     } else {
       this.rearJoint.enableMotor(false);
@@ -393,42 +454,37 @@ export class Bike {
       this.crank += (target - this.crank) * Math.min(1, dt * 6);
     }
 
-    // ---- Lean: moves the rider body over the bike (springs), plus bar pull on the ground.
+    // ---- Lean: the rider moves over the bike (limb springs) and works the bars.
+    // Everything on the ground is internal rider-vs-bike effort: the bike only pitches
+    // because the rider's mass moves and the ground pushes back.
     const leanInput = (c.leanForward ? 1 : 0) - (c.leanBack ? 1 : 0);
-    // Sprinting riders get over the front; an explicit lean overrides it.
-    // On one wheel without input the rider instinctively shifts against the tip-over.
-    let leanGoal = leanInput !== 0 ? leanInput : c.pedal && rearDown ? BIKE.sprintLean : 0;
-    if (leanInput === 0 && this.manual && Math.abs(this.manual.angleDeg) > MANUAL.minAngle * 2) {
-      leanGoal = this.manual.wheel === 'rear' ? 0.7 : -0.8;
-    }
-    this.lean += (leanGoal - this.lean) * Math.min(1, dt * 8);
-
-    if (grounded && this.manual) {
-      // Manual / nose manual (arcade balance): cancel gravity's tipping moment about the
-      // wheel on the ground, so the angle is the player's to control. Lean steers it;
-      // with no input it settles back onto both wheels.
-      const contact = (this.manual.wheel === 'rear' ? this.rearWheel : this.frontWheel).getPosition();
-      let tGrav = 0;
-      for (const b of this.bodies()) tGrav += (b.getWorldCenter().x - contact.x) * -b.getMass() * -PHYSICS_G;
-      let tq = -tGrav * MANUAL.gravityAssist;
-      if (leanInput !== 0) tq += -leanInput * BIKE.groundLeanTorque;
-      else {
-        const a = (this.manual.angleDeg * Math.PI) / 180;
-        tq += -Math.sign(a) * BIKE.balanceMaxTorque * (this.manual.wheel === 'rear' ? 0.45 : 0.9) - MANUAL.settleStiffness * a;
-      }
-      tq -= BIKE.balanceKd * MANUAL.dampingScale * omega;
-      this.frame.applyTorque(tq, true);
+    const slopeNow = this.slopeUnderBike();
+    const pitch = wrapAngle(this.frame.getAngle() - slopeNow); // + = nose up vs ground
+    let leanGoal: number;
+    if (leanInput !== 0) {
+      leanGoal = leanInput;
     } else if (grounded) {
+      // Balance reflex: shift weight against the pitch (front up → move forward), and
+      // over the front while sprinting so the drive doesn't loop the bike.
+      const reflex = BIKE.balanceLeanKp * pitch + BIKE.balanceLeanKd * omega;
+      leanGoal = Math.max(-1, Math.min(1, reflex + (c.pedal && rearDown ? BIKE.sprintLean : 0)));
+    } else {
+      leanGoal = 0;
+    }
+    this.lean += (leanGoal - this.lean) * Math.min(1, dt * BIKE.leanRate);
+
+    if (grounded) {
       if (leanInput !== 0) {
-        this.frame.applyTorque(-leanInput * BIKE.groundLeanTorque, true);
+        // Pull up on the bars (lean back) or press them down (lean forward).
+        this.barTorque(-leanInput * BIKE.groundLeanTorque);
       } else {
-        // Rider balance: keeps pedalling from looping the bike and settles bumps.
-        const err = wrapAngle(this.frame.getAngle() - this.slopeUnderBike());
-        const tq = -(BIKE.balanceKp * err + BIKE.balanceKd * omega);
-        this.frame.applyTorque(Math.max(-BIKE.balanceMaxTorque, Math.min(BIKE.balanceMaxTorque, tq)), true);
+        // Arms steady the bike against the ground slope (limited by the rider's strength).
+        const tq = -(BIKE.balanceKp * pitch + BIKE.balanceKd * omega);
+        this.barTorque(Math.max(-BIKE.balanceMaxTorque, Math.min(BIKE.balanceMaxTorque, tq)));
       }
     } else {
-      // Air: angular impulse toward the target spin rate; released = momentum bleeds off.
+      // Air: rotation control toward a target spin rate (about the shared centre of
+      // mass, so the bike's speed and path are untouched). Released = it bleeds off.
       const sysW = omega;
       if (leanInput !== 0) {
         const target = -leanInput * BIKE.airSpinRate * t.spinRate;
@@ -439,59 +495,73 @@ export class Bike {
       }
     }
 
-    if (this.absorbTimer > 0) {
-      this.absorbTimer -= dt;
-      this.addSpin(-this.frame.getAngularVelocity() * Math.min(1, MANUAL.absorbRate * dt));
-      // The rider's torso stops rotating relative to the bike too.
-      this.rider.setAngularVelocity(this.frame.getAngularVelocity());
-    }
-
     if (this.braking) {
-      // Brake torque on each wheel relative to the frame, capped so it never reverses the spin.
-      for (const w of [this.rearWheel, this.frontWheel]) {
-        const rel = w.getAngularVelocity() - omega;
-        const tq = Math.max(-BIKE.brakeTorque, Math.min(BIKE.brakeTorque, (-rel * w.getInertia()) / dt));
-        w.applyTorque(tq, true);
-        this.frame.applyTorque(-tq, true);
+      // Rim brakes: each wheel joint's motor holds zero spin relative to the frame,
+      // up to the brake's torque. Solved implicitly, so it also holds on a slope.
+      for (const j of [this.rearJoint, this.frontJoint]) {
+        j.enableMotor(true);
+        j.setMotorSpeed(0);
+        j.setMaxMotorTorque(BIKE.brakeTorque);
       }
+    } else {
+      this.frontJoint.enableMotor(false);
     }
 
-    // ---- Hop: hold to charge, release to pop. Coyote time 0.1 s.
+    // ---- Bunny hop: hold to crouch, release to spring up (legs drive the bike into the
+    // ground), then pull the bike up after you, bars first. Height comes from the ground.
     const canHop = this.groundedTime > -0.1;
-    if (c.jump && canHop) this.hopCharge = Math.min(BIKE.hopChargeTime, this.hopCharge + dt);
-    if (!c.jump && this.prevJump && this.hopCharge > 0 && canHop) {
-      const k = this.hopCharge / BIKE.hopChargeTime;
-      const sp = BIKE.hopMinSpeed + (BIKE.hopMaxSpeed - BIKE.hopMinSpeed) * k;
-      const slope = this.slopeUnderBike();
-      this.addVelocity(-Math.sin(slope) * sp, Math.cos(slope) * sp);
-      this.events.push({ type: 'hop', charge: k });
-      this.groundedTime = -1;
+    if (c.jump && canHop && this.hopPhase === 0) this.hopCharge = Math.min(BIKE.hopChargeTime, this.hopCharge + dt);
+    if (!c.jump && this.prevJump && this.hopCharge > 0 && canHop && this.hopPhase === 0) {
+      this.hopPower = this.hopCharge / BIKE.hopChargeTime;
+      this.hopPhase = BIKE.hopPushTime + BIKE.hopPullTime;
+      this.events.push({ type: 'hop', charge: this.hopPower });
+    }
+    let legGoal: number | null = null; // tuck override: -1 legs extended … +1 crouched
+    if (this.hopPhase > 0) {
+      const k = 0.45 + 0.55 * this.hopPower;
+      if (this.hopPhase > BIKE.hopPullTime) {
+        legGoal = -1;
+        this.muscle(BIKE.hopPushForce * k);
+      } else {
+        legGoal = 1;
+        this.muscle(-BIKE.hopPullForce * k, BIKE.hopBarsShare);
+        this.groundedTime = -1;
+      }
+      this.hopPhase = Math.max(0, this.hopPhase - dt);
     }
     if (!c.jump) this.hopCharge = 0;
     this.prevJump = c.jump;
 
-    // ---- Pump: down on the back side of a roller gains speed, on the face loses it.
-    this.pumpCooldown = Math.max(0, this.pumpCooldown - dt);
+    // ---- Pump: holding down extends the legs (driving the bike into the ground), letting
+    // go absorbs (legs fold, bike comes up). Extend in the trough / back side and absorb over
+    // the crest: the ground reaction does positive work and the bike speeds up. Wrong timing
+    // costs speed. No velocity is ever added directly.
     const v = this.frame.getLinearVelocity();
-    if (c.pump && grounded) {
-      const slope = this.slopeUnderBike();
-      this.frame.applyForceToCenter(new Vec2(Math.sin(slope) * BIKE.pumpDownForce, -Math.cos(slope) * BIKE.pumpDownForce), true);
-      if (!this.prevPump && this.pumpCooldown === 0 && v.x > 0) {
-        const s = Math.hypot(v.x, v.y);
-        if (v.y < -BIKE.pumpMinDescent) {
-          this.addVelocity((v.x / s) * BIKE.pumpImpulse, (v.y / s) * BIKE.pumpImpulse);
-          this.pumpCooldown = BIKE.pumpCooldown;
-          this.events.push({ type: 'pump', good: true });
-        } else if (v.y > BIKE.pumpMinDescent) {
-          this.addVelocity(-(v.x / s) * BIKE.pumpPenalty, -(v.y / s) * BIKE.pumpPenalty);
-          this.pumpCooldown = BIKE.pumpCooldown;
-          this.events.push({ type: 'pump', good: false });
-        }
-      }
+    if (c.pump && !this.prevPump && grounded) {
+      this.pumpPhase = BIKE.pumpPushTime;
+      if (v.y < -BIKE.pumpMinDescent) this.events.push({ type: 'pump', good: true });
+      else if (v.y > BIKE.pumpMinDescent) this.events.push({ type: 'pump', good: false });
+    }
+    if (!c.pump && this.prevPump) this.absorbPhase = BIKE.pumpAbsorbTime;
+    if (c.pump && !grounded) {
+      // Holding down in the air: crouch, ready to push the bike into the landing.
+      legGoal ??= BIKE.pumpAbsorbTuck;
+    } else if (c.pump) {
+      legGoal ??= -1;
+      if (this.pumpPhase > 0 && grounded) this.muscle(BIKE.pumpForce);
+      this.pumpPhase = Math.max(0, this.pumpPhase - dt);
+    } else if (this.absorbPhase > 0) {
+      legGoal ??= BIKE.pumpAbsorbTuck;
+      this.absorbPhase = Math.max(0, this.absorbPhase - dt);
     }
     this.prevPump = c.pump;
-    const tuckTarget = c.pump ? 1 : (this.hopCharge / BIKE.hopChargeTime) * 0.8;
-    this.tuck += (tuckTarget - this.tuck) * Math.min(1, dt * 12);
+    const tuckTarget = legGoal ?? (this.hopCharge / BIKE.hopChargeTime) * 0.8;
+    // Legs move fast when working (hop / pump), slower when just settling.
+    const legRate = this.hopPhase > 0 ? BIKE.hopLegRate : legGoal !== null ? BIKE.pumpLegRate : 12;
+    this.tuck += (tuckTarget - this.tuck) * Math.min(1, dt * legRate);
+    const working = legGoal !== null;
+    this.legs.setFrequency(BIKE.legHz * this.limbScale * (working ? BIKE.legActionStiffness : 1));
+    this.core.setFrequency(BIKE.coreHz * this.limbScale * (working ? BIKE.legActionStiffness : 1));
 
     // ---- Limb springs follow lean / tuck, with a hip bob while sprinting.
     const bob = c.pedal && rearDown ? Math.abs(Math.sin(this.crank)) * BIKE.pedalBobAmount : 0;
@@ -500,21 +570,37 @@ export class Bike {
     this.arms.setLength(dist(GEOM.grips, tgt.shoulder));
     this.core.setLength(dist(GEOM.headTubeTop, tgt.hip));
 
+    // ---- Knee stop: legs can only fold so far. Past that the rider and bike move together
+    // along the bike's up axis (an inelastic internal impulse, momentum conserved).
+    this.bottomOut();
+
     // ---- Posture: the torso holds its angle relative to the bike (reaction goes into the frame).
     const torsoTarget = Math.atan2(tgt.shoulder.y - tgt.hip.y, tgt.shoulder.x - tgt.hip.x) - Math.atan2(GEOM.shoulderLocal.y, GEOM.shoulderLocal.x);
-    const err = wrapAngle(this.frame.getAngle() + torsoTarget - this.rider.getAngle());
+    let err = wrapAngle(this.frame.getAngle() + torsoTarget - this.rider.getAngle());
+    if (!grounded && leanInput === 0 && this.hopPhase === 0) {
+      // In the air the rider levels the bike under them toward the landing slope ahead,
+      // turning the bike relative to their body (internal: the bike turns a lot, the
+      // heavier body a little, total spin unchanged).
+      const ahead = this.frame.getPosition().x + this.frame.getLinearVelocity().x * BIKE.airLevelLookahead;
+      const off = wrapAngle(this.frame.getAngle() - this.terrain.slopeAt(ahead));
+      err += Math.max(-BIKE.airLevelMax, Math.min(BIKE.airLevelMax, off));
+    }
     const posture = BIKE.postureStiffness * err + BIKE.postureDamping * (omega - this.rider.getAngularVelocity());
     this.rider.applyTorque(posture, true);
     this.frame.applyTorque(-posture, true);
 
-    // ---- Resistance: rolling (surface dependent) and air drag.
+    // ---- Rolling resistance: a friction torque at each wheel on the ground (tire on
+    // surface), with the reaction into the frame. No air drag.
     const mass = this.system().mass;
-    if (grounded && Math.abs(v.x) > 0.3) {
-      const drag = SURFACE_DRAG[this.terrain.surfaceAt(this.frame.getPosition().x)];
-      this.frame.applyForceToCenter(new Vec2(-drag * mass * Math.sign(v.x), 0), true);
+    const drag = SURFACE_DRAG[this.terrain.surfaceAt(this.frame.getPosition().x)];
+    for (const [w, n] of [[this.rearWheel, this.contacts.rear], [this.frontWheel, this.contacts.front]] as const) {
+      if (n === 0) continue;
+      const rel = w.getAngularVelocity() - omega;
+      const max = (drag * mass * 0.5) * BIKE.wheelRadius;
+      const tq = Math.max(-max, Math.min(max, (-rel * w.getInertia()) / dt));
+      w.applyTorque(tq, true);
+      this.frame.applyTorque(-tq, true);
     }
-    const sp = Math.hypot(v.x, v.y);
-    if (sp > 0.1) this.frame.applyForceToCenter(new Vec2(-BIKE.airDrag * sp * v.x, -BIKE.airDrag * sp * v.y), true);
 
     this.wobble = Math.max(0, this.wobble - dt / LANDING.wobbleTime);
   }
@@ -526,6 +612,7 @@ export class Bike {
       if (this.crashTimer >= CRASH.respawnDelay) this.respawn();
       return;
     }
+    this.checkBodyContact();
     if (this.pendingCrash) { this.crash(this.pendingCrash); return; }
     this.refreshContacts();
 
@@ -603,9 +690,10 @@ export class Bike {
     const x = this.terrain.checkpoints[index];
     this.checkpointIndex = index;
     this.state = 'riding';
-    this.build(x, (this.terrain.heightAt(x) ?? 0) + BIKE.wheelRadius + 0.05, index === 0 ? 0 : CRASH.respawnSpeed);
+    this.build(x, (this.terrain.heightAt(x) ?? 0) + BIKE.wheelRadius + 0.05, 0);
     this.lean = this.tuck = this.wobble = 0;
     this.hopCharge = 0;
+    this.hopPhase = this.pumpPhase = 0;
     this.pendingCrash = null;
     this.events.push({ type: 'respawn', checkpoint: index });
   }

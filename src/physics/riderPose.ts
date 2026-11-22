@@ -125,11 +125,13 @@ export function buildPose(frame: Xf, rider: Xf, crank: number): RiderPose {
 
 /**
  * Where the rider's hip and shoulder want to be, in bike-local space, for a
- * given lean (-1 back … +1 forward) and tuck (0 … 1). These targets drive the
+ * given lean (-1 back … +1 forward) and tuck (-0.8 extended … 1 crouched). These targets drive the
  * spring "limbs" that hold the rider body on the bike.
  */
 export function riderTarget(lean: number, tuck: number, bob: number): { hip: Vec; shoulder: Vec } {
   const back = Math.min(0, lean), fwd = Math.max(0, lean);
+  // Negative tuck = legs extended (pumping / popping), capped by leg reach.
+  tuck = Math.max(-0.8, tuck);
   const hip = {
     x: -0.14 + back * 0.24 + fwd * 0.15,
     y: 0.76 - tuck * 0.2 + back * 0.02 + fwd * 0.03 + bob,

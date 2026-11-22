@@ -45,7 +45,7 @@ const STRINGS = {
   helpPedal: { pt: 'pedalar', en: 'pedal', de: 'treten' },
   helpLean: { pt: 'inclinar / girar no ar', en: 'lean / spin in the air', de: 'lehnen / in der Luft drehen' },
   helpHop: { pt: 'pular (segure para carregar)', en: 'hop (hold to charge)', de: 'Bunny Hop (halten zum Laden)' },
-  helpPump: { pt: 'pump na descida', en: 'pump on the way down', de: 'pumpen bergab' },
+  helpPump: { pt: 'pump: segure no fundo, solte na crista', en: 'pump: hold in the dip, release on the crest', de: 'Pumpen: in der Senke halten, auf der Kuppe loslassen' },
   helpDebug: { pt: 'colisores', en: 'colliders', de: 'Kollider' },
   helpInfo: { pt: 'dados de pouso', en: 'landing data', de: 'Landedaten' },
   helpRestart: { pt: 'voltar ao início', en: 'restart', de: 'Neustart' },

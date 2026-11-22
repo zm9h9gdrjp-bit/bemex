@@ -96,8 +96,17 @@ export class Terrain {
     });
 
     for (const sec of this.sections) {
+      // Each run of ground ends in a vertical wall down past the pit floor: that is the
+      // gap's face (a short landing hits it), and it keeps the chain's end vertices out of
+      // reach, which avoids a Planck bug with contacts on a chain's last vertex.
+      const first = sec.pts[0], last = sec.pts[sec.pts.length - 1];
+      const verts = [
+        new Vec2(first.x - 0.001, this.pitY - 3),
+        ...sec.pts.map((p) => new Vec2(p.x, p.y)),
+        new Vec2(last.x + 0.001, this.pitY - 3),
+      ];
       this.body.createFixture({
-        shape: new Chain(sec.pts.map((p) => new Vec2(p.x, p.y)), false),
+        shape: new Chain(verts, false),
         friction: SURFACE_FRICTION[sec.surface],
         filterCategoryBits: CAT.TERRAIN,
         filterMaskBits: MASK.TERRAIN,
@@ -148,6 +157,25 @@ export class Terrain {
     return this.heightAt(x) ?? this.pitY;
   }
 
+  /**
+   * True if a circle (center p, radius r) touches or is inside the ground or the
+   * pit floor. Used for the rider's body-contact checks, which are done here
+   * geometrically rather than with Planck sensors.
+   */
+  touches(p: Vec, r: number): boolean {
+    if (p.y - r <= this.pitY) return true;
+    const h = this.heightAt(p.x);
+    if (h !== null && p.y < h) return true;
+    for (const s of this.sections) {
+      if (p.x + r < s.minX || p.x - r > s.maxX) continue;
+      let i = Math.max(0, this.indexIn(s, p.x - r) - 1);
+      for (; i < s.pts.length - 1 && s.pts[i].x <= p.x + r + 0.5; i++) {
+        if (segDist(p, s.pts[i], s.pts[i + 1]) <= r) return true;
+      }
+    }
+    return false;
+  }
+
   surfaceAt(x: number): SurfaceType {
     return this.sectionAt(x)?.surface ?? 'dirt';
   }
@@ -163,7 +191,8 @@ export class Terrain {
 
   /**
    * Checkpoints every ~15% of the track. Each one is pulled back until it sits on
-   * calm, flat-ish ground so a respawn never drops the rider into a gap or onto a lip.
+   * flat ground with room to build speed, so a standing respawn never faces a gap
+   * it can't clear.
    */
   private computeCheckpoints(): number[] {
     const len = this.finishX - this.startX;
@@ -177,11 +206,18 @@ export class Terrain {
     return result;
   }
 
+  /** Flat ground with ~20 m of run-up ahead: respawns start from a standstill. */
   private isCalm(x: number): boolean {
-    for (let dx = -2; dx <= 6; dx += 1) {
+    for (let dx = -2; dx <= 20; dx += 1) {
       if (this.heightAt(x + dx) === null) return false;
       if (Math.abs(this.slopeAt(x + dx)) > 0.12) return false;
     }
     return true;
   }
+}
+
+function segDist(p: Vec, a: Vec, b: Vec): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
 }
