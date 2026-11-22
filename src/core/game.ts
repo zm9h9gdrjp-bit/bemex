@@ -20,6 +20,8 @@ import { TouchControls } from '../ui/touch';
 import { MobileChrome } from '../ui/mobile';
 import { Menu } from '../ui/menu';
 import { GhostRecorder, GhostReplay } from '../ghost/ghost';
+import { StartScreen } from '../ui/start';
+import { TRACKS, trackById } from '../levels';
 import { encodeGhost, decodeGhost, type GhostData } from '../ghost/codec';
 
 /** A friend's run loaded from a challenge link. */
@@ -62,6 +64,10 @@ export class Game {
   timeScale = 1;
   private pauseReasons = new Set<string>();
   private respawnFade = 0;
+  /** Seconds left in the 3-2-1 countdown; physics waits until it reaches 0. */
+  private countdown = 0;
+  private trackLayer = new Container();
+  private start: StartScreen;
 
   constructor(private app: Application, private track: TrackData, hudRoot: HTMLElement) {
     this.hud = new Hud(hudRoot);
@@ -71,20 +77,22 @@ export class Game {
     this.menu = new Menu(hudRoot, {
       resume: () => this.setPaused('menu', false),
       restart: () => this.restart(),
-      trackName: () => track.name,
-      bestTime: () => Save.data.bestTimes[track.id] ?? null,
-      hasGhost: () => !!Save.data.ghosts[track.id],
+      trackName: () => this.track.name,
+      bestTime: () => Save.data.bestTimes[this.track.id] ?? null,
+      hasGhost: () => !!Save.data.ghosts[this.track.id],
       challengeLink: (name) => this.challengeLink(name),
       ghostEnabled: () => Save.data.settings.showGhost,
       setGhostEnabled: (on) => { Save.update((d) => { d.settings.showGhost = on; }); this.restart(); },
-      deleteBest: () => { Save.update((d) => { delete d.bestTimes[track.id]; delete d.ghosts[track.id]; }); this.ownBest = null; this.restart(); },
+      deleteBest: () => { Save.update((d) => { delete d.bestTimes[this.track.id]; delete d.ghosts[this.track.id]; }); this.ownBest = null; this.restart(); },
+      tracks: () => { this.menu.close(); this.showStart(); },
       challengeName: () => this.challenge?.data.name ?? null,
       leaveChallenge: () => { this.challenge = null; history.replaceState(null, '', location.pathname + location.search); this.restart(); },
     });
 
     this.newRun();
     // Render graph: sky/parallax (screen space) → world (meters, y-up) → screen fx.
-    this.worldLayer.addChild(new TerrainView(this.terrain), this.buildMarkers());
+    this.buildTrackLayer();
+    this.worldLayer.addChild(this.trackLayer);
     this.ghostView = new BikeView(this.bike, this.terrain, this.interp, GHOST_LOOK);
     this.ghostView.ghost = 0.5;
     this.bikeView = new BikeView(this.bike, this.terrain, this.interp);
@@ -93,9 +101,46 @@ export class Game {
 
     this.resize();
     this.app.renderer.on('resize', () => this.resize());
-    this.loadGhosts().then(() => this.restart());
-    window.addEventListener('hashchange', () => this.loadGhosts().then(() => this.restart()));
+    this.start = new StartScreen(hudRoot, (id) => this.selectTrack(id));
+    // A challenge link goes straight to its track; otherwise show the track list.
+    const linkTrack = this.linkTrackId();
+    if (linkTrack && trackById(linkTrack)) this.selectTrack(linkTrack);
+    else this.showStart();
+    window.addEventListener('hashchange', () => { const id = this.linkTrackId(); if (id && trackById(id)) this.selectTrack(id); });
     app.ticker.add((tk) => this.frame(tk.deltaMS / 1000));
+  }
+
+  // ------------------------------------------------------------------ tracks
+
+  private showStart(): void {
+    this.setPaused('start', true);
+    this.hud.hideMessage();
+    this.start.show(TRACKS);
+  }
+
+  private selectTrack(id: string): void {
+    const tr = trackById(id);
+    if (!tr) return;
+    this.start.hide();
+    this.setPaused('start', false);
+    if (tr.id !== this.track.id) {
+      this.track = tr;
+      this.newRun();
+      this.buildTrackLayer();
+    }
+    this.loadGhosts().then(() => this.restart());
+  }
+
+  /** Track id carried in plain text by challenge links (#t=<id>&g=<ghost>). */
+  private linkTrackId(): string | null {
+    if (!/[#&]g=/.test(location.hash)) return null;
+    const m = /[#&]t=([^&]+)/.exec(location.hash);
+    return m ? decodeURIComponent(m[1]) : this.track.id;
+  }
+
+  private buildTrackLayer(): void {
+    for (const c of this.trackLayer.removeChildren()) c.destroy({ children: true });
+    this.trackLayer.addChild(new TerrainView(this.terrain), this.buildMarkers());
   }
 
   // ------------------------------------------------------------------ runs
@@ -112,6 +157,7 @@ export class Game {
     this.steps = this.lostSteps = 0;
     this.finished = false;
     this.accumulator = 0;
+    this.countdown = 3;
     if (this.bikeView) {
       this.bikeView.bike = this.bike;
       this.bikeView.terrain = this.terrain;
@@ -128,7 +174,7 @@ export class Game {
     if (this.challenge) {
       const c = this.challenge.data;
       this.hud.message(t('challengeFrom', { n: c.name }), fmtTime(c.finishSteps / PHYSICS.stepHz));
-      setTimeout(() => { if (this.steps > 0 && !this.finished && this.bike.state === 'riding') this.hud.hideMessage(); }, 2500);
+      setTimeout(() => { if (!this.finished && this.bike.state === 'riding') this.hud.hideMessage(); }, 3600);
     }
   }
 
@@ -155,7 +201,7 @@ export class Game {
   private async challengeLink(name: string): Promise<string | null> {
     if (!this.ownBest) return null;
     const code = await encodeGhost({ ...this.ownBest, name });
-    return `${location.origin}${location.pathname}#g=${code}`;
+    return `${location.origin}${location.pathname}#t=${encodeURIComponent(this.track.id)}&g=${code}`;
   }
 
   private async onFinish(): Promise<void> {
@@ -177,6 +223,7 @@ export class Game {
     }
     this.hud.message(`${t('finish')} ${fmtTime(time)}`, sub, [
       { label: t('restart'), run: () => this.restart() },
+      { label: t('tracks'), run: () => this.showStart() },
       { label: t('challenge'), run: () => this.openMenu('challenge'), accent: true },
     ]);
   }
@@ -227,6 +274,14 @@ export class Game {
 
     const dt = Math.min(0.1, realDt) * this.timeScale;
     const step = 1 / PHYSICS.stepHz;
+    if (this.countdown > 0) {
+      // 3-2-1: the world waits (keeps every run identical for the ghost).
+      this.countdown = Math.max(0, this.countdown - Math.min(0.1, realDt));
+      this.hud.setCountdown(this.countdown > 0 ? Math.ceil(this.countdown) : 0);
+      this.accumulator = 0;
+      this.render(realDt);
+      return;
+    }
     this.accumulator += dt;
     let n = 0;
     const live = this.controls();

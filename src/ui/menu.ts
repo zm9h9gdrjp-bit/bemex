@@ -24,6 +24,8 @@ export interface MenuHooks {
   /** Name of the friend whose challenge is loaded, if any. */
   challengeName(): string | null;
   leaveChallenge(): void;
+  /** Back to the track list. */
+  tracks(): void;
 }
 
 type View = 'main' | 'challenge' | 'progress' | 'pin' | 'admin';
@@ -45,7 +47,7 @@ export class Menu {
     this.root.className = 'menu';
     this.root.setAttribute('role', 'dialog');
     this.root.setAttribute('aria-modal', 'true');
-    this.sheet.className = 'sheet';
+    this.sheet.className = 'sheet scroll';
     this.root.append(this.sheet);
     this.root.addEventListener('pointerdown', (e) => { if (e.target === this.root) this.close(); });
     parent.append(this.root);
@@ -126,6 +128,7 @@ export class Menu {
     const list = el('div', 'list');
     const best = this.hooks.bestTime();
     const friend = this.hooks.challengeName();
+    list.append(row(t('tracks'), this.hooks.trackName(), () => this.hooks.tracks()));
     list.append(row(t('challenge'), best ? `${t('best')} ${fmtTime(best)}` : t('ghostNone'), () => this.go('challenge'), !best));
     if (friend) list.append(row(t('challengeEnd'), t('challengeFrom', { n: friend }), () => { this.hooks.leaveChallenge(); this.close(); }));
     list.append(toggleRow(t('ghostOn'), this.hooks.ghostEnabled(), (on) => this.hooks.setGhostEnabled(on)));

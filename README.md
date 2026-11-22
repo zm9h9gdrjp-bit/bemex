@@ -47,6 +47,12 @@ No celular: polegar esquerdo com **Pedal** embaixo e **Trás / Frente** logo aci
 | F2 / F3 / F4 / F6 | Colisores · dados · sensores de queda · câmera lenta |
 | R | Voltar à largada |
 
+## Tela inicial e pistas
+
+- **Tela inicial:** lista das pistas com o perfil do terreno, comprimento, número de vãos e o seu recorde. Toque para correr. Menu → Pistas volta para ela.
+- **Pistas:** Pump Track (228 m, rollers e mesa, sem vãos), Circuito de Terra (466 m, 4 vãos), Saltos Grandes (201 m, 2 vãos). Todas validadas pelo piloto automático sem quedas.
+- **Contagem 3-2-1** antes de cada largada; a física só começa depois do "VAI".
+
 ## Menu, fantasma, desafio, backup e admin
 
 - **Menu** (Esc / P, ou botão Menu no celular): continuar, reiniciar, desafiar um amigo, mostrar fantasma, progresso e admin.

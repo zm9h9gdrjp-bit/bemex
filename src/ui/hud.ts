@@ -32,6 +32,9 @@ export class Hud {
   private speed = el('span', 'hud-speed num', '0');
   private cp = el('span', 'hud-cp num');
   private gap = el('span', 'hud-gap num');
+  private count = el('div', 'hud-count num');
+  private countShown = -1;
+  private goTimer = 0;
   private ghostTag = el('div', 'ghost-tag');
   private actions = el('div', 'actions');
   private time = el('div', 'hud-time num');
@@ -105,7 +108,7 @@ export class Hud {
     item(['R'], 'helpRestart');
     item(['Esc'], 'menu');
 
-    root.append(this.fade, this.ghostTag, tl, this.time, this.meter, this.pop, this.pump, this.banner, this.debug, help);
+    root.append(this.fade, this.ghostTag, this.count, tl, this.time, this.meter, this.pop, this.pump, this.banner, this.debug, help);
   }
 
   setSpeed(ms: number): void { this.speed.textContent = fmt(ms * 3.6); }
@@ -191,6 +194,18 @@ export class Hud {
     this.ghostTag.style.top = `${y}px`;
   }
 
+  /** 3-2-1 countdown; 0 shows GO briefly. */
+  setCountdown(n: number): void {
+    if (n === this.countShown) return;
+    this.countShown = n;
+    this.count.textContent = n > 0 ? String(n) : t('go');
+    this.count.classList.remove('show');
+    void this.count.offsetWidth; // restart the pop animation
+    this.count.classList.add('show');
+    this.count.classList.toggle('go', n === 0);
+    if (n === 0) this.goTimer = 0.7;
+  }
+
   /** Distance to the ghost: positive = you are ahead. */
   setGap(meters: number | null): void {
     this.gap.hidden = meters === null;
@@ -221,6 +236,7 @@ export class Hud {
   }
 
   tick(dt: number): void {
+    if (this.goTimer > 0 && (this.goTimer -= dt) <= 0) { this.count.classList.remove('show'); this.countShown = -1; }
     if (this.popTimer > 0 && (this.popTimer -= dt) <= 0) this.pop.classList.remove('show');
     if (this.pumpTimer > 0 && (this.pumpTimer -= dt) <= 0) this.pump.classList.remove('show');
   }

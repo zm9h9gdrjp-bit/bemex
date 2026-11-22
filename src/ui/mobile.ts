@@ -51,6 +51,10 @@ export class MobileChrome {
     document.addEventListener('gesturechange', stop, { passive: false });
     document.addEventListener('dblclick', stop, { passive: false });
     document.addEventListener('contextmenu', stop);
-    document.addEventListener('touchmove', stop, { passive: false });
+    // Block page bounce, but let scrollable panels (menu, track list) scroll.
+    document.addEventListener('touchmove', (e) => {
+      if ((e.target as HTMLElement | null)?.closest?.('.scroll')) return;
+      e.preventDefault();
+    }, { passive: false });
   }
 }
