@@ -31,6 +31,9 @@ export function crashText(r: CrashReason): string {
 export class Hud {
   private speed = el('span', 'hud-speed num', '0');
   private cp = el('span', 'hud-cp num');
+  private gap = el('span', 'hud-gap num');
+  private ghostTag = el('div', 'ghost-tag');
+  private actions = el('div', 'actions');
   private time = el('div', 'hud-time num');
   private pop = el('div', 'hud-pop');
   private popBig = el('div', 'big');
@@ -56,10 +59,11 @@ export class Hud {
 
   constructor(root: HTMLElement) {
     const tl = el('div', 'hud-tl');
-    tl.append(this.speed, el('span', 'hud-unit', t('speedUnit')), this.cp);
+    tl.append(this.speed, el('span', 'hud-unit', t('speedUnit')), this.cp, this.gap);
+    this.gap.hidden = true;
     this.pop.append(this.popBig, this.popSmall);
     const b = el('div');
-    b.append(this.bannerText, this.bannerWhy, this.bannerHint);
+    b.append(this.bannerText, this.bannerWhy, this.bannerHint, this.actions);
     this.banner.append(b);
 
     // Manual balance: an arc from 0° (both wheels) to the tip-over angle, with the balance point marked.
@@ -99,8 +103,9 @@ export class Hud {
     item(['F4'], 'helpSensors');
     item(['F6'], 'helpSlow');
     item(['R'], 'helpRestart');
+    item(['Esc'], 'menu');
 
-    root.append(this.fade, tl, this.time, this.meter, this.pop, this.pump, this.banner, this.debug, help);
+    root.append(this.fade, this.ghostTag, tl, this.time, this.meter, this.pop, this.pump, this.banner, this.debug, help);
   }
 
   setSpeed(ms: number): void { this.speed.textContent = fmt(ms * 3.6); }
@@ -148,6 +153,8 @@ export class Hud {
 
   crashBanner(show: boolean, checkpoint = 0, reason?: CrashReason): void {
     this.banner.classList.toggle('show', show);
+    this.banner.classList.remove('note');
+    this.actions.innerHTML = '';
     if (show) {
       this.bannerText.textContent = checkpoint === 0 ? t('respawnStart') : t('respawnIn', { n: checkpoint });
       this.bannerWhy.textContent = reason ? crashText(reason) : '';
@@ -158,12 +165,38 @@ export class Hud {
   /** 0 → 1 black fade used around respawns. */
   setFade(a: number): void { this.fade.style.opacity = String(Math.max(0, Math.min(1, a))); }
 
-  /** Generic centred message (finish time etc.). */
-  message(main: string, sub: string): void {
-    this.banner.classList.add('show');
+  /** Generic centred message (finish time etc.) with optional buttons. */
+  message(main: string, sub: string, actions: { label: string; run: () => void; accent?: boolean }[] = []): void {
+    this.banner.classList.add('show', 'note');
     this.bannerText.textContent = main;
     this.bannerWhy.textContent = sub;
     this.bannerHint.textContent = '';
+    this.actions.innerHTML = '';
+    for (const a of actions) {
+      const btn = el('button', a.accent ? 'btn accent' : 'btn', a.label);
+      btn.type = 'button';
+      btn.addEventListener('click', (e) => { e.preventDefault(); a.run(); });
+      this.actions.append(btn);
+    }
+  }
+
+  hideMessage(): void { this.banner.classList.remove('show'); this.actions.innerHTML = ''; }
+
+  /** Label floating above the ghost rider (screen pixels), or null to hide it. */
+  setGhostTag(text: string | null, x = 0, y = 0): void {
+    this.ghostTag.classList.toggle('show', text !== null);
+    if (text === null) return;
+    if (this.ghostTag.textContent !== text) this.ghostTag.textContent = text;
+    this.ghostTag.style.left = `${x}px`;
+    this.ghostTag.style.top = `${y}px`;
+  }
+
+  /** Distance to the ghost: positive = you are ahead. */
+  setGap(meters: number | null): void {
+    this.gap.hidden = meters === null;
+    if (meters === null) return;
+    const sign = meters >= 0 ? '+' : '−';
+    this.gap.innerHTML = `${t('ghost')} <b>${sign}${fmt(Math.abs(meters))} m</b>`;
   }
 
   toggleDebug(): boolean { return this.debug.classList.toggle('show'); }

@@ -47,6 +47,15 @@ No celular: polegar esquerdo com **Pedal** embaixo e **Trás / Frente** logo aci
 | F2 / F3 / F4 / F6 | Colisores · dados · sensores de queda · câmera lenta |
 | R | Voltar à largada |
 
+## Menu, fantasma, desafio, backup e admin
+
+- **Menu** (Esc / P, ou botão Menu no celular): continuar, reiniciar, desafiar um amigo, mostrar fantasma, progresso e admin.
+- **Fantasma gravado por inputs:** cada corrida grava só os comandos de cada passo de física (120 Hz) e um ponto de referência a cada 0,5 s. Como cada corrida começa num mundo físico novo, a reprodução é idêntica (testado: erro 0,00000 m ao longo de uma volta com queda e respawn). O melhor tempo da pista fica salvo e corre junto com você, com a distância na tela.
+- **Desafio por link:** "Desafiar um amigo" gera um link (~900 caracteres) com o seu melhor fantasma e nome. Quem abre corre contra ele e no fim vê quem venceu e por quanto. Nenhum servidor envolvido.
+- **Backup do progresso:** Menu → Progresso mostra um código (`TR1.…`) para copiar ou baixar como arquivo, e restaura a partir de código ou arquivo. O save é versionado e migra versões antigas; save corrompido volta ao padrão sem travar.
+- **Offline:** depois da primeira visita o jogo abre sem internet (service worker; só no build publicado).
+- **Admin** (Menu → Admin, PIN padrão `1234` em `src/config/dev.ts`): somar, tirar ou definir moedas e gemas, zerar a economia, apagar o recorde da pista.
+
 ## Física sem ajudas artificiais
 
 Nenhuma velocidade é somada ou tirada diretamente. Tudo vem de forças reais:

@@ -31,7 +31,12 @@ class InputState {
   private now = new Set<Action>();
 
   attach(target: Window): void {
+    const typing = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+    };
     target.addEventListener('keydown', (e) => {
+      if (typing(e)) return; // menus: let text fields receive the keys
       const acts = KEYMAP[e.code];
       if (!acts) return;
       e.preventDefault();

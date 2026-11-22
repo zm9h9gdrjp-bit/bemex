@@ -11,7 +11,7 @@ export class MobileChrome {
   private rotate = document.createElement('div');
   private bar = document.createElement('div');
 
-  constructor(root: HTMLElement, onPauseChange: (paused: boolean) => void) {
+  constructor(root: HTMLElement, onPauseChange: (paused: boolean) => void, onMenu: () => void) {
     this.rotate.className = 'rotate';
     this.rotate.innerHTML = `
       <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="15" y="6" width="18" height="30" rx="3"/><path d="M8 34a16 16 0 0 0 22 8"/><path d="M26 38l4 4-5 2"/></svg>
@@ -32,6 +32,7 @@ export class MobileChrome {
     };
     btn(t('data'), '<svg viewBox="0 0 24 24"><path d="M5 19V11M12 19V5M19 19v-6"/></svg>', () => pulse('debugInfo'));
     btn(t('restart'), '<svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v5h5"/></svg>', () => pulse('respawn'));
+    btn(t('menu'), '<svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg>', onMenu);
     root.append(this.bar);
 
     const portrait = window.matchMedia('(orientation: portrait) and (pointer: coarse)');

@@ -23,6 +23,16 @@ export interface RiderLook {
   grip: number;
 }
 
+/** Ghost rider: neutral greys so it never competes with the player's colours. */
+export const GHOST_LOOK: RiderLook = {
+  frame: 0xd9dde2, frameDark: 0xaeb4bb,
+  jersey: 0xf4f6f8, jerseyDark: 0xc5cad0, jerseyStripe: 0xaeb4bb,
+  pants: 0x7d8792, pantsDark: 0x66707b,
+  helmet: 0xe6e9ec, helmetStripe: 0xaeb4bb, goggles: 0x4a525b,
+  glove: 0x66707b, skin: 0xd9dde2, shoe: 0x66707b,
+  rim: 0xe6e9ec, tire: 0x7d8792, grip: 0x7d8792,
+};
+
 export const DEFAULT_LOOK: RiderLook = {
   frame: 0xd8262f, frameDark: 0x8f171d,
   jersey: 0xf2efe8, jerseyDark: 0xb8b2a6, jerseyStripe: 0xd8262f,
@@ -66,7 +76,7 @@ export class BikeView extends Container {
   /** Debug: draw IK bones and joint dots over the rider. */
   showBones = false;
 
-  constructor(private bike: Bike, private terrain: Terrain, private interp: Interpolator, public look: RiderLook = DEFAULT_LOOK) {
+  constructor(public bike: Bike, public terrain: Terrain, private interp: Interpolator, public look: RiderLook = DEFAULT_LOOK) {
     super();
     this.addChild(this.shadow.g, this.g.g);
   }
