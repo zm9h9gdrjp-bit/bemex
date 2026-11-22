@@ -20,7 +20,7 @@ A cada push, o workflow `.github/workflows/pages.yml` gera o build e publica na 
 2. Abra https://zm9h9gdrjp-bit.github.io/bemex/ no Safari.
 3. Para tela cheia na horizontal: botão Compartilhar → **Adicionar à Tela de Início**, e abra pelo ícone.
 
-No celular: **Trás / Frente** inclinam (no chão e no ar), **Pedal** acelera, **Pulo** (segure para carregar), **Pump** na descida. **Reiniciar** e **Dados** ficam no canto superior direito. Em retrato o jogo pausa e pede para girar.
+No celular: polegar esquerdo com **Pedal** embaixo e **Trás / Frente** logo acima (dá para deslizar o dedo do pedal para a inclinação sem soltar); polegar direito com **Pulo** (segure para carregar) e **Pump**. **Reiniciar** e **Dados** ficam no canto superior direito; em **Dados** há botões de Colisores, Sensores, Ossos e Câmera lenta. Em retrato o jogo pausa e pede para girar.
 
 ## Estado atual: Milestone 1, protótipo de física
 
@@ -35,17 +35,25 @@ No celular: **Trás / Frente** inclinam (no chão e no ar), **Pedal** acelera, *
 - Debug draw dos colisores, juntas e pontos de contato; painel com FPS, gráfico de frame time, tempo no ar, rotação e ângulo de pouso.
 - Teclado, toque (aparece sozinho em telas touch) e gamepad padrão.
 
-### Controles
+### Controles (teclado)
 
 | Tecla | Ação |
 |---|---|
-| → / D | Pedalar (no ar: girar para frente, precisa apertar de novo depois de decolar) |
-| ← / A | Inclinar para trás / girar para trás no ar |
+| → / D | Pedalar |
+| A / Q (ou ←) | Inclinar para trás · mortal para trás no ar |
+| E / F | Inclinar para frente · mortal para frente no ar |
 | ↑ / W | Bunny hop (segure para carregar) |
-| ↓ / S | Pump / agachar |
-| F2 | Colisores (debug draw) |
-| F3 | Dados de pouso e FPS |
+| ↓ / S | Pump (na descida ganha, na subida perde) |
+| F2 / F3 / F4 / F6 | Colisores · dados · sensores de queda · câmera lenta |
 | R | Voltar à largada |
+
+## Atualização v2, parte A (A1, A2, A4)
+
+- **Quedas só quando:** o corpo do piloto toca o chão (sensores de cabeça, tronco, quadril, mãos e joelhos), impacto perpendicular acima de 18 m/s, pouso no meio da manobra, ou ângulo acima de ±75°. Pousar numa roda só vira manual / nose manual com medidor de equilíbrio; passar de 80° para trás ou 70° para frente derruba. Pouso duro (acima de 9 m/s) perde velocidade sem cair.
+- **Piloto como corpo separado** (65 kg) preso à bike (11 kg, rodas de 1 kg) por molas: pernas e braços absorvem o pouso e a inclinação move o peso de verdade.
+- **Pedalada para frente** pela relação 25/9, pedivelas niveladas ao soltar, pés presos aos pedais por IK, joelhos para frente.
+- **Geometria de BMX 20"**, 36 raios, coroa, catraca e corrente animada; renderização interpolada a 120 Hz de física.
+- Respawn em 1,2 s com fade, toque para voltar antes, contador de quedas e motivo da queda na tela.
 
 ## Estrutura
 

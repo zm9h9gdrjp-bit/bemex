@@ -5,6 +5,8 @@ import { Input } from './input';
 import { fmt, fmtTime, t } from './i18n';
 import { Terrain, type FixtureTag } from '../physics/terrain';
 import { Bike, NO_CONTROLS, type BikeControls } from '../physics/bike';
+import { Interpolator } from './interp';
+import { CRASH } from '../config/physics';
 import type { TrackData } from '../levels/types';
 import { Camera } from '../render/camera';
 import { Backdrop } from '../render/backdrop';
@@ -12,7 +14,7 @@ import { TerrainView } from '../render/terrainView';
 import { BikeView, RUT_LIFT } from '../render/bikeView';
 import { DebugDraw } from '../render/debugDraw';
 import { SpeedLines } from '../render/speedLines';
-import { Hud } from '../ui/hud';
+import { Hud, crashText } from '../ui/hud';
 import { TouchControls } from '../ui/touch';
 import { MobileChrome } from '../ui/mobile';
 
@@ -32,6 +34,7 @@ export class Game {
   private worldLayer = new Container();
   private bikeView: BikeView;
   private debugDraw = new DebugDraw();
+  private interp = new Interpolator();
   private speedLines = new SpeedLines();
   private hud: Hud;
 
@@ -43,6 +46,7 @@ export class Game {
   /** Simulation speed multiplier (dev slow-mo, later trick slow-mo). */
   timeScale = 1;
   paused = false;
+  private respawnFade = 0;
 
   constructor(private app: Application, track: TrackData, hudRoot: HTMLElement) {
     this.world = new World({ gravity: new Vec2(0, PHYSICS.gravity) });
@@ -54,11 +58,12 @@ export class Game {
 
     // Render graph: sky/parallax (screen space) → world (meters, y-up) → screen fx.
     this.worldLayer.addChild(new TerrainView(this.terrain), this.buildMarkers());
-    this.bikeView = new BikeView(this.bike, this.terrain);
+    this.bikeView = new BikeView(this.bike, this.terrain, this.interp);
     this.worldLayer.addChild(this.bikeView, this.debugDraw);
     app.stage.addChild(this.backdrop, this.worldLayer, this.speedLines);
 
     this.hud = new Hud(hudRoot);
+    this.hud.onToggle = (k) => this.toggle(k);
     new TouchControls(hudRoot);
     new MobileChrome(hudRoot, (p) => { this.paused = p; });
     this.hud.setCheckpoint(0, this.terrain.checkpoints.length - 1);
@@ -103,9 +108,13 @@ export class Game {
   private frame(realDt: number): void {
     const t0 = performance.now();
     Input.poll();
-    if (Input.pressed('debugDraw')) this.debugDraw.enabled = !this.debugDraw.enabled;
+    if (Input.pressed('debugDraw')) this.toggle('colliders');
+    if (Input.pressed('debugSensors')) this.toggle('sensors');
+    if (Input.pressed('debugSlow')) this.toggle('slow');
     if (Input.pressed('debugInfo')) this.hud.toggleDebug();
     if (Input.pressed('respawn')) this.restart();
+    // Tap to respawn faster: any ride input during the crash wait.
+    if (this.bike.state === 'crashed' && (Input.pressed('jump') || Input.pressed('pedal') || Input.pressed('pump'))) this.bike.skipCrash();
     // Portrait on a phone (rotate prompt showing) or tab hidden: freeze the sim.
     if (this.paused) { this.accumulator = 0; return; }
 
@@ -115,8 +124,9 @@ export class Game {
     let steps = 0;
     // After the finish line the rider coasts out and brakes; input is ignored.
     const c = this.finished ? NO_CONTROLS : this.controls();
-    if (this.finished && this.bike.state === 'riding') this.bike.frame.setLinearDamping(1.2);
+    if (this.finished && this.bike.state === 'riding') this.bike.brake(true);
     while (this.accumulator >= step && steps < PHYSICS.maxStepsPerFrame) {
+      this.interp.snapshot(this.bike.allBodies());
       this.bike.preStep(step, c);
       this.world.step(step, PHYSICS.velocityIterations, PHYSICS.positionIterations);
       this.bike.postStep(step);
@@ -124,6 +134,7 @@ export class Game {
       steps++;
     }
     if (steps === PHYSICS.maxStepsPerFrame) this.accumulator = 0;
+    this.interp.alpha = this.accumulator / step;
 
     if (!this.finished) {
       this.raceTime += dt;
@@ -141,15 +152,14 @@ export class Game {
     for (const e of this.bike.events.splice(0)) {
       switch (e.type) {
         case 'landing':
-          if (e.quality !== 'crash') this.hud.landing(e.quality, e.airtime, (e.rotation * 180) / Math.PI);
+          if (e.quality !== 'crash') this.hud.landing(e.quality, e.airtime, (e.rotation * 180) / Math.PI, e.cased);
           if (e.quality === 'perfect') navigator.vibrate?.(18);
-          if (e.quality === 'sloppy') { this.camera.addTrauma(0.35); navigator.vibrate?.(40); }
+          if (e.quality === 'sloppy' || e.cased) { this.camera.addTrauma(e.cased ? 0.5 : 0.35); navigator.vibrate?.(40); }
           break;
         case 'pump':
-          this.hud.showPump();
+          this.hud.showPump(e.good);
           break;
         case 'crash':
-          this.hud.landing('crash', this.bike.airtime, 0);
           this.hud.crashBanner(true, this.bike.checkpointIndex, e.reason);
           this.camera.addTrauma(0.8);
           navigator.vibrate?.([60, 40, 60]);
@@ -158,11 +168,22 @@ export class Game {
         case 'respawn':
           this.hud.crashBanner(false);
           this.lostTime += this.raceTime - this.crashedAt;
+          this.camera.snap(this.bike.position);
           break;
         case 'checkpoint':
           this.hud.setCheckpoint(e.index, this.terrain.checkpoints.length - 1);
           break;
       }
+    }
+  }
+
+  /** Debug toggles shared by keys (F2/F4/F6) and the tappable buttons in the data panel. */
+  private toggle(k: 'colliders' | 'sensors' | 'bones' | 'slow'): boolean {
+    switch (k) {
+      case 'colliders': return (this.debugDraw.enabled = !this.debugDraw.enabled);
+      case 'sensors': return (this.debugDraw.sensorsOnly = !this.debugDraw.sensorsOnly);
+      case 'bones': return (this.bikeView.showBones = !this.bikeView.showBones);
+      case 'slow': this.timeScale = this.timeScale === 1 ? 0.15 : 1; return this.timeScale !== 1;
     }
   }
 
@@ -172,6 +193,7 @@ export class Game {
     this.raceTime = 0;
     this.lostTime = 0;
     this.finished = false;
+    this.bike.brake(false);
     this.hud.crashBanner(false);
     this.hud.setCheckpoint(0, this.terrain.checkpoints.length - 1);
     this.camera.snap(this.bike.position);
@@ -191,12 +213,18 @@ export class Game {
     );
     this.backdrop.update(cam);
     this.bikeView.update();
-    this.debugDraw.draw(this.world);
+    this.debugDraw.draw(this.world, RUT_LIFT);
+    // Fade out just before the respawn and back in right after it.
+    const b = this.bike;
+    const fadeOut = b.state === 'crashed' ? Math.max(0, (b.crashTimer - (CRASH.respawnDelay - CRASH.fadeTime)) / CRASH.fadeTime) : 0;
+    this.respawnFade = b.state === 'crashed' ? fadeOut : Math.max(0, this.respawnFade - dt / CRASH.fadeTime);
+    this.hud.setFade(this.respawnFade * 0.85);
+    this.hud.setManual(b.state === 'riding' ? b.manual : null);
     const speed = Math.hypot(vel.x, vel.y);
     this.speedLines.update(dt, speed, this.bike.state === 'riding');
 
     this.hud.setSpeed(this.bike.state === 'riding' ? speed : 0);
-    this.hud.setTime(this.raceTime, this.lostTime);
+    this.hud.setTime(this.raceTime, this.lostTime, this.bike.crashes);
     this.hud.tick(dt);
   }
 
@@ -205,20 +233,22 @@ export class Game {
     const d = b.debug;
     const deg = (r: number) => `${fmt((r * 180) / Math.PI, 1)}°`;
     const slope = this.terrain.slopeAt(b.frame.getPosition().x);
+    const susp = b.suspension();
+    const mass = b.allBodies().reduce((m, body) => m + body.getMass(), 0);
     this.hud.setDebug([
       { label: 'FPS', value: fmt(1 / Math.max(dt, 1e-3)) },
       { label: 'frame', value: `${fmt(frameMs, 2)} ms` },
-      { label: 'estado', value: b.state },
+      { label: 'estado', value: b.manual ? `${b.state} · ${b.manual.wheel === 'rear' ? 'manual' : 'nose'}` : b.state },
       { label: 'rodas', value: `${b.grounded ? (b.bothWheelsDown ? '2' : '1') : '0'} no chão` },
       { label: 'tempo no ar', value: `${fmt(d.airtime, 2)} s` },
       { label: 'rotação no ar', value: deg(d.rotation) },
-      { label: 'ângulo bike', value: deg(b.frame.getAngle()) },
-      { label: 'inclinação chão', value: deg(slope) },
+      { label: 'ângulo bike − chão', value: deg(b.frame.getAngle() - slope) },
       { label: 'último pouso', value: d.lastQuality ? `${d.lastQuality} ${fmt(d.lastAngleDiffDeg, 1)}°` : '—' },
-      { label: 'suspensão', value: `${fmt(b.suspension().rear * 100, 1)} / ${fmt(b.suspension().front * 100, 1)} cm` },
+      { label: 'último impacto', value: `${fmt(d.lastImpact, 1)} m/s` },
+      { label: 'última queda', value: d.lastCrash ? crashText(d.lastCrash) : '—' },
+      { label: 'pneus / pernas', value: `${fmt(-susp.rear * 100, 1)} / ${fmt(-susp.front * 100, 1)} · ${fmt(b.limbCompression(), 1)} cm` },
       { label: 'velocidade', value: `${fmt(b.speed, 2)} m/s` },
-      { label: 'x', value: `${fmt(b.frame.getPosition().x, 1)} m` },
-      { label: 'massa', value: `${fmt(b.frame.getMass() + b.rearWheel.getMass() + b.frontWheel.getMass(), 1)} kg` },
+      { label: 'massa total', value: `${fmt(mass, 1)} kg` },
     ], frameMs);
   }
 

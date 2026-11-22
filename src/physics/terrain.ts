@@ -22,8 +22,12 @@ export interface TerrainSection {
   maxX: number;
 }
 
+/** Rider body parts that end the run when they touch the ground. */
+export type BodyPart = 'head' | 'torso' | 'hips' | 'hands' | 'knees';
+
 export interface FixtureTag {
   kind: 'ground' | 'pit' | 'wheel' | 'frame' | 'rider' | 'ragdoll';
+  part?: BodyPart;
   surface?: SurfaceType;
   wheel?: 'rear' | 'front';
   owner?: number;

@@ -119,11 +119,14 @@ html, body {
 }
 .tbtn svg { width: 34px; height: 34px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .tbtn.down { background: rgba(255,176,0,0.85); border-color: var(--accent); color: #1b1d1f; }
-.tbtn.lean-back { left: max(20px, env(safe-area-inset-left)); bottom: 28px; width: 96px; height: 96px; }
-.tbtn.lean-fwd  { left: calc(max(20px, env(safe-area-inset-left)) + 112px); bottom: 52px; width: 96px; height: 96px; }
-.tbtn.pedal { right: max(20px, env(safe-area-inset-right)); bottom: 24px; width: 118px; height: 118px; }
-.tbtn.jump  { right: calc(max(20px, env(safe-area-inset-right)) + 132px); bottom: 92px; width: 80px; height: 80px; }
-.tbtn.pump  { right: calc(max(20px, env(safe-area-inset-right)) + 132px); bottom: 4px; width: 80px; height: 80px; }
+/* Left thumb: pedal at the bottom, lean buttons directly above it. Right thumb: up / down. */
+.tbtn.pedal     { left: max(20px, env(safe-area-inset-left)); bottom: 18px; width: 132px; height: 84px; border-radius: 42px; }
+.tbtn.lean-back { left: max(20px, env(safe-area-inset-left)); bottom: 114px; width: 62px; height: 62px; }
+.tbtn.lean-fwd  { left: calc(max(20px, env(safe-area-inset-left)) + 70px); bottom: 114px; width: 62px; height: 62px; }
+.tbtn.lean-back svg, .tbtn.lean-fwd svg { width: 26px; height: 26px; }
+.tbtn.lean-back span, .tbtn.lean-fwd span { font-size: 11px; }
+.tbtn.jump { right: max(20px, env(safe-area-inset-right)); bottom: 120px; width: 92px; height: 92px; }
+.tbtn.pump { right: max(20px, env(safe-area-inset-right)); bottom: 18px; width: 92px; height: 92px; }
 
 @media (max-height: 420px) {
   .hud-pop .big { font-size: 36px; }
@@ -166,4 +169,48 @@ html, body { overscroll-behavior: none; -webkit-touch-callout: none; -webkit-tex
 }
 @media (pointer: coarse) {
   .hud-debug { left: 50%; top: max(var(--s2), env(safe-area-inset-top)); transform: translateX(-50%); }
+}
+
+/* ---- Crash fade, banner hint ---- */
+.hud-fade { position: absolute; inset: 0; background: #0e0f10; opacity: 0; pointer-events: none; }
+.hud-banner div { flex-wrap: wrap; justify-content: center; max-width: 92vw; }
+.hud-banner .hint { flex-basis: 100%; text-align: center; font-size: 13px; color: var(--ink-3); }
+@media (pointer: fine) { .hud-banner .hint { display: none; } }
+.hud-time small { white-space: nowrap; }
+.hud-pump.bad { color: var(--danger); }
+
+/* ---- Manual balance meter: half-dial above the rider's lane ---- */
+.hud-meter {
+  position: absolute; left: 30%; top: 30%; width: 120px; height: 64px;
+  transform: translateX(-50%); opacity: 0; transition: opacity 120ms linear;
+}
+.hud-meter.show { opacity: 1; }
+.hud-meter svg { width: 120px; height: 64px; fill: none; stroke-width: 7; stroke-linecap: round; }
+.hud-meter .track { stroke: rgba(22, 23, 24, 0.7); }
+.hud-meter .danger { stroke: var(--danger); }
+.hud-meter i, .hud-meter .sweet {
+  position: absolute; left: 59px; bottom: 6px; width: 3px; height: 50px;
+  transform-origin: 50% 100%; border-radius: 2px;
+}
+.hud-meter i { background: var(--ink); box-shadow: 0 0 0 1px rgba(0,0,0,0.4); }
+.hud-meter .sweet { background: var(--accent); height: 12px; bottom: 50px; transform-origin: 50% 56px; transform: rotate(var(--sweet, 0deg)); }
+
+/* ---- Debug toggles (tappable on phones) ---- */
+.hud-debug { pointer-events: auto; }
+.dbg-toggles { display: flex; flex-wrap: wrap; gap: var(--s1); margin-bottom: var(--s2); }
+.dbg-toggles button {
+  font: inherit; font-size: 13px; color: var(--ink-2); background: transparent;
+  border: 1px solid var(--panel-line); border-radius: 2px; padding: 4px 8px; min-height: 32px;
+}
+.dbg-toggles button.on { color: #1b1d1f; background: var(--accent); border-color: var(--accent); }
+
+/* Crash banner sits in the sky band, clear of the rider and the thumb buttons. */
+.hud-banner { top: 20%; }
+.hud-banner div { border-left: 3px solid var(--danger); }
+/* Phone: the restart / data bar goes below the timer and its crash line. */
+.mbar { top: calc(max(var(--s3), env(safe-area-inset-top)) + 52px); }
+@media (pointer: coarse) {
+  .hud-banner { top: calc(max(var(--s3), env(safe-area-inset-top)) + 52px); justify-content: flex-start; padding-left: max(var(--s3), env(safe-area-inset-left)); }
+  .hud-banner div { max-width: calc(100vw - 320px); justify-content: flex-start; }
+  .hud-banner .hint { text-align: left; }
 }

@@ -1,9 +1,11 @@
-import { World, Vec2, Box, Circle, Polygon, WheelJoint, type Body, type Fixture } from 'planck';
-import { BIKE, LANDING, CRASH } from '../config/physics';
+import { World, Vec2, Box, Circle, Polygon, WheelJoint, DistanceJoint, type Body } from 'planck';
+import { BIKE, LANDING, CRASH, MANUAL, PHYSICS } from '../config/physics';
+
+const PHYSICS_G = PHYSICS.gravity; // negative (y-up)
 import { CAT, MASK } from './collision';
-import { SURFACE_DRAG, type Terrain, type Vec, type FixtureTag } from './terrain';
-import { classifyLanding, wrapAngle, type LandingQuality } from './landing';
-import { GEOM, localPose, poseToWorld, type RiderPose } from './riderPose';
+import { SURFACE_DRAG, type Terrain, type Vec, type FixtureTag, type BodyPart } from './terrain';
+import { classifyLanding, wrapAngle, type LandingQuality, type CrashCause } from './landing';
+import { GEOM, GEAR_RATIO, buildPose, riderTarget, toWorld, type RiderPose, type Xf } from './riderPose';
 import { Ragdoll } from './ragdoll';
 
 export interface BikeControls {
@@ -27,107 +29,150 @@ export interface BikeTuning {
 
 export const DEFAULT_TUNING: BikeTuning = { topSpeed: 1, pedalTorque: 1, spinRate: 1, grip: 1, landingForgiveness: 1 };
 
+/** Why a run ended. Shown in the crash banner and the debug readout. */
+export type CrashReason =
+  | { kind: 'body'; part: BodyPart }
+  | { kind: 'landing'; cause: CrashCause; impact: number; angleDeg: number }
+  | { kind: 'tipBack'; angleDeg: number }
+  | { kind: 'tipForward'; angleDeg: number }
+  | { kind: 'pit' };
+
 export type BikeEvent =
-  | { type: 'landing'; quality: LandingQuality; airtime: number; rotation: number; angleDiffDeg: number }
-  | { type: 'pump' }
+  | { type: 'landing'; quality: LandingQuality; airtime: number; rotation: number; angleDiffDeg: number; impact: number; cased: boolean }
+  | { type: 'pump'; good: boolean }
   | { type: 'hop'; charge: number }
-  | { type: 'crash'; reason: 'landing' | 'head' | 'pit' }
+  | { type: 'crash'; reason: CrashReason }
   | { type: 'respawn'; checkpoint: number }
   | { type: 'checkpoint'; index: number };
 
-export interface LandingDebug {
+export interface BikeDebug {
   airtime: number;
   rotation: number;
   lastAngleDiffDeg: number;
+  lastImpact: number;
   lastQuality: LandingQuality | null;
+  lastCrash: CrashReason | null;
 }
 
+/** Riding on one wheel: which one, and the angle vs the slope in degrees (signed, + = nose up). */
+export interface ManualState { wheel: 'rear' | 'front'; angleDeg: number }
+
 /**
- * One rider + bike. Frame and rider share a body while riding (rider mass sits
- * in hip/head fixtures, which keeps the stack stable at 120 Hz); on a crash the
- * rider fixtures are removed and replaced by a separate ragdoll.
+ * One rider + bike.
+ *
+ * Bodies: frame (11 kg), two wheels (1 kg, rim inertia) on stiff wheel joints
+ * that model tire squish, and a separate 65 kg rider body held by three soft
+ * distance springs (legs and core triangulate the hip from the bottom bracket
+ * and head tube, arms hold the shoulder from the grips). Leaning and tucking change the spring
+ * rest lengths, so the rider's mass really moves over the bike and the legs and
+ * arms absorb landings. On a crash the rider body becomes a ragdoll.
  */
 export class Bike {
   frame!: Body;
   rearWheel!: Body;
   frontWheel!: Body;
+  rider!: Body;
   private rearJoint!: WheelJoint;
   private frontJoint!: WheelJoint;
-  private riderFixtures: Fixture[] = [];
+  private legs!: DistanceJoint;
+  private arms!: DistanceJoint;
+  private core!: DistanceJoint;
 
   state: 'riding' | 'crashed' = 'riding';
   ragdoll: Ragdoll | null = null;
   tuning: BikeTuning = { ...DEFAULT_TUNING };
   godMode = false;
 
-  // Contact bookkeeping (updated by the world contact router).
   private contacts = { rear: 0, front: 0 };
-  private pendingCrash: 'landing' | 'head' | 'pit' | null = null;
+  private pendingCrash: CrashReason | null = null;
 
-  // Air state.
   airtime = 0;
   airRotation = 0;
   private lastAngle = 0;
   private groundedTime = 0;
-  private landing: { t: number; angleDiff: number; first: 'rear' | 'front'; airtime: number; rotation: number } | null = null;
+  private landing: { t: number; angleDiff: number; first: 'rear' | 'front'; airtime: number; rotation: number; impact: number } | null = null;
 
-  // Control state.
   lean = 0;
   tuck = 0;
+  /** Crank angle (radians, y-up). Decreasing = pedalling forward = clockwise on screen. */
   crank = 0;
+  pedalling = false;
   wobble = 0;
+  manual: ManualState | null = null;
   private hopCharge = 0;
   private prevJump = false;
   private prevPump = false;
-  private fwdArmed = true;
   private pumpCooldown = 0;
-  private crashTimer = 0;
+  /** After a one-wheel touchdown the rider keeps soaking up pitch for a moment. */
+  private absorbTimer = 0;
+  private braking = false;
+  crashTimer = 0;
+  crashes = 0;
   time = 0;
 
   checkpointIndex = 0;
   readonly events: BikeEvent[] = [];
-  readonly debug: LandingDebug = { airtime: 0, rotation: 0, lastAngleDiffDeg: 0, lastQuality: null };
+  readonly debug: BikeDebug = { airtime: 0, rotation: 0, lastAngleDiffDeg: 0, lastImpact: 0, lastQuality: null, lastCrash: null };
   /** Set by the trick system (milestone 2): true while a trick is still being held. */
   midTrick = () => false;
 
   constructor(private world: World, private terrain: Terrain, readonly id: number) {
-    this.build(terrain.startX, (terrain.heightAt(terrain.startX) ?? 0) + BIKE.wheelRadius + 0.05, 0);
+    this.build(terrain.startX, (terrain.heightAt(terrain.startX) ?? 0) + BIKE.wheelRadius + 0.03, 0);
   }
 
   // ---------------------------------------------------------------- building
 
   private build(x: number, y: number, speed: number): void {
     const w = this.world;
-    const tag = (kind: FixtureTag['kind'], wheel?: 'rear' | 'front'): FixtureTag => ({ kind, wheel, owner: this.id });
+    const tag = (kind: FixtureTag['kind'], extra: Partial<FixtureTag> = {}): FixtureTag => ({ kind, owner: this.id, ...extra });
     const filter = { filterCategoryBits: CAT.BIKE, filterMaskBits: MASK.BIKE };
+    const sensor = { ...filter, isSensor: true, density: 0 };
 
-    this.frame = w.createDynamicBody({ position: new Vec2(x, y), angularDamping: 0 });
-    this.frame.createFixture({
-      shape: new Polygon([new Vec2(-0.5, 0.06), new Vec2(0.46, 0.18), new Vec2(0.38, 0.46), new Vec2(-0.32, 0.46)]),
-      density: BIKE.frameDensity, friction: 0.4, ...filter, userData: tag('frame'),
-    });
-    this.addRiderFixtures();
+    // Frame: a slim polygon from the rear axle to the head tube.
+    this.frame = w.createDynamicBody({ position: new Vec2(x, y) });
+    const framePoly = [new Vec2(-0.48, 0.04), new Vec2(0.42, 0.22), new Vec2(0.36, 0.46), new Vec2(-0.26, 0.34)];
+    const f = this.frame.createFixture({ shape: new Polygon(framePoly), density: 1, friction: 0.4, ...filter, userData: tag('frame') });
+    f.setDensity(BIKE.frameMass / polygonArea(framePoly));
+    // Hands and knees ride with the bike: sensors at the grips and in front of the frame.
+    this.frame.createFixture({ shape: new Circle(new Vec2(GEOM.grips.x, GEOM.grips.y), 0.07), ...sensor, userData: tag('rider', { part: 'hands' }) });
+    this.frame.createFixture({ shape: new Circle(new Vec2(0.06, 0.44), 0.07), ...sensor, userData: tag('rider', { part: 'knees' }) });
+    this.frame.resetMassData();
 
     const wheel = (lx: number, side: 'rear' | 'front') => {
       const b = w.createDynamicBody({ position: new Vec2(x + lx, y), bullet: true });
       b.createFixture({
-        shape: new Circle(BIKE.wheelRadius),
-        density: BIKE.wheelDensity, friction: BIKE.wheelFriction * this.tuning.grip, restitution: 0,
-        ...filter, userData: tag('wheel', side),
+        shape: new Circle(BIKE.wheelRadius), density: 1,
+        friction: BIKE.wheelFriction * this.tuning.grip, restitution: 0,
+        ...filter, userData: tag('wheel', { wheel: side }),
       });
+      b.setMassData({ mass: BIKE.wheelMass, center: new Vec2(0, 0), I: BIKE.wheelMass * BIKE.wheelRadius ** 2 * 0.85 });
       return b;
     };
-    this.rearWheel = wheel(-BIKE.halfWheelbase, 'rear');
-    this.frontWheel = wheel(BIKE.halfWheelbase, 'front');
+    this.rearWheel = wheel(GEOM.rearAxle.x, 'rear');
+    this.frontWheel = wheel(GEOM.frontAxle.x, 'front');
 
-    // Planck's spring uses the effective mass along the axis (≈ the wheel), so
-    // convert the desired sprung-mass feel into equivalent joint parameters.
-    const mWheel = this.rearWheel.getMass(), mFrame = this.frame.getMass();
-    const mEff = 1 / (1 / mWheel + 1 / mFrame);
-    const mSprung = mFrame / 2;
-    const omega = 2 * Math.PI * BIKE.suspensionHz;
-    const k = mSprung * omega * omega;
-    const c = 2 * mSprung * BIKE.suspensionDamping * omega;
+    // Rider body: origin at the hip, x axis along the bike. Head/torso/hips are crash sensors that carry the mass.
+    const tgt = riderTarget(0, 0, 0);
+    const hipW = toWorld(tgt.hip, { p: { x, y }, a: 0 });
+    this.rider = w.createDynamicBody({ position: new Vec2(hipW.x, hipW.y) });
+    const sh = GEOM.shoulderLocal;
+    const torsoAngle = Math.atan2(sh.y, sh.x);
+    const riderParts: [BodyPart, Box | Circle, number][] = [
+      ['torso', new Box(GEOM.torso / 2, 0.13, new Vec2(sh.x / 2, sh.y / 2), torsoAngle), 0.62],
+      ['hips', new Circle(new Vec2(0, 0), 0.13), 0.3],
+      ['head', new Circle(new Vec2(sh.x + 0.07, sh.y + 0.2), GEOM.headRadius + 0.02), 0.08],
+    ];
+    for (const [part, shape, share] of riderParts) {
+      const fx = this.rider.createFixture({ shape, ...sensor, density: 1, userData: tag('rider', { part }) });
+      fx.setDensity((BIKE.riderMass * share) / shapeArea(shape));
+    }
+    this.rider.resetMassData();
+
+    // Tire squish: wheel joints tuned against the whole sprung mass (bike + rider).
+    const mWheel = BIKE.wheelMass, mSprung = (this.frame.getMass() + this.rider.getMass()) / 2;
+    const mEff = 1 / (1 / mWheel + 1 / this.frame.getMass());
+    const omega = 2 * Math.PI * BIKE.tireHz;
+    const k = mSprung * omega * omega, c = 2 * mSprung * BIKE.tireDamping * omega;
     const omegaEff = Math.sqrt(k / mEff);
     const jointOpt = {
       frequencyHz: omegaEff / (2 * Math.PI), dampingRatio: c / (2 * mEff * omegaEff),
@@ -137,33 +182,37 @@ export class Bike {
     this.rearJoint = w.createJoint(new WheelJoint(jointOpt, this.frame, this.rearWheel, this.rearWheel.getPosition(), axis))!;
     this.frontJoint = w.createJoint(new WheelJoint(jointOpt, this.frame, this.frontWheel, this.frontWheel.getPosition(), axis))!;
 
+    // Limbs as springs.
+    const fw = (p: Vec) => { const q = toWorld(p, { p: { x, y }, a: 0 }); return new Vec2(q.x, q.y); };
+    const shW = toWorld(sh, { p: hipW, a: 0 });
+    // Spring feel is specified against the rider's mass; Planck measures it against the
+    // reduced mass of the two bodies, so scale frequency and damping to match.
+    const mR = this.rider.getMass(), mF = this.frame.getMass();
+    const mRed = 1 / (1 / mR + 1 / mF);
+    const scale = Math.sqrt(mR / mRed);
+    const limb = (anchorFrame: Vec, anchorRider: Vec, hz: number, damping: number) =>
+      w.createJoint(new DistanceJoint(
+        { frequencyHz: hz * scale, dampingRatio: damping * scale },
+        this.frame, this.rider, fw(anchorFrame), new Vec2(anchorRider.x, anchorRider.y),
+      ))!;
+    this.legs = limb(GEOM.bottomBracket, hipW, BIKE.legHz, BIKE.legDamping);
+    this.arms = limb(GEOM.grips, shW, BIKE.armHz, BIKE.armDamping);
+    this.core = limb(GEOM.headTubeTop, hipW, BIKE.coreHz, BIKE.coreDamping);
+
     for (const b of this.bodies()) b.setLinearVelocity(new Vec2(speed, 0));
     this.contacts.rear = this.contacts.front = 0;
     this.lastAngle = 0;
     this.airtime = 0;
     this.airRotation = 0;
     this.landing = null;
+    this.manual = null;
   }
 
-  private addRiderFixtures(): void {
-    const filter = { filterCategoryBits: CAT.BIKE, filterMaskBits: MASK.BIKE };
-    const tag: FixtureTag = { kind: 'rider', owner: this.id };
-    this.riderFixtures = [
-      this.frame.createFixture({
-        shape: new Box(BIKE.hipHalfSize.x, BIKE.hipHalfSize.y, new Vec2(BIKE.hipOffset.x, BIKE.hipOffset.y), -0.5),
-        density: BIKE.hipDensity, friction: 0.5, ...filter, userData: tag,
-      }),
-      this.frame.createFixture({
-        shape: new Circle(new Vec2(BIKE.headOffset.x, BIKE.headOffset.y), BIKE.headRadius),
-        density: BIKE.headDensity, friction: 0.5, ...filter, userData: tag,
-      }),
-    ];
-  }
-
-  private bodies(): Body[] { return [this.frame, this.rearWheel, this.frontWheel]; }
+  private bodies(): Body[] { return [this.frame, this.rearWheel, this.frontWheel, this.rider]; }
 
   private destroyBike(): void {
-    for (const b of this.bodies()) this.world.destroyBody(b);
+    for (const b of [this.frame, this.rearWheel, this.frontWheel]) this.world.destroyBody(b);
+    if (this.state === 'riding') this.world.destroyBody(this.rider);
   }
 
   // ---------------------------------------------------------------- contacts
@@ -172,23 +221,43 @@ export class Bike {
   onContact(mine: FixtureTag, other: FixtureTag, delta: 1 | -1): void {
     if (this.state !== 'riding') return;
     if (mine.kind === 'wheel' && mine.wheel) {
-      if (other.kind === 'pit' && delta > 0) { this.requestCrash('pit'); return; }
-      this.contacts[mine.wheel] = Math.max(0, this.contacts[mine.wheel] + delta);
-      if (delta > 0) this.onWheelTouch(mine.wheel);
-    } else if (mine.kind === 'rider' && delta > 0) {
-      this.requestCrash(other.kind === 'pit' ? 'pit' : 'head');
+      if (other.kind === 'pit' && delta > 0) { this.requestCrash({ kind: 'pit' }); return; }
+      // Contact state is re-read from the wheel each step (refreshContacts); begin events only trigger landings.
+      if (delta > 0) { this.contacts[mine.wheel] = Math.max(1, this.contacts[mine.wheel]); this.onWheelTouch(mine.wheel); }
+    } else if (mine.kind === 'rider' && mine.part && delta > 0) {
+      this.requestCrash(other.kind === 'pit' ? { kind: 'pit' } : { kind: 'body', part: mine.part });
     } else if (mine.kind === 'frame' && other.kind === 'pit' && delta > 0) {
-      this.requestCrash('pit');
+      this.requestCrash({ kind: 'pit' });
     }
   }
 
-  private requestCrash(reason: 'landing' | 'head' | 'pit'): void {
-    if (this.godMode && reason !== 'pit') return;
+  private requestCrash(reason: CrashReason): void {
+    if (this.godMode && reason.kind !== 'pit') return;
     if (!this.pendingCrash) this.pendingCrash = reason;
+  }
+
+  /** Recounts touching ground contacts per wheel straight from Planck (no drift from missed events). */
+  private refreshContacts(): void {
+    const count = (b: Body) => {
+      let n = 0;
+      for (let e = b.getContactList(); e; e = e.next ?? null) {
+        const c = e.contact;
+        if (!c.isTouching()) continue;
+        const other = (c.getFixtureA().getBody() === b ? c.getFixtureB() : c.getFixtureA()).getUserData() as FixtureTag | null;
+        if (other?.kind === 'ground') n++;
+      }
+      return n;
+    };
+    this.contacts.rear = count(this.rearWheel);
+    this.contacts.front = count(this.frontWheel);
   }
 
   get grounded(): boolean { return this.contacts.rear > 0 || this.contacts.front > 0; }
   get bothWheelsDown(): boolean { return this.contacts.rear > 0 && this.contacts.front > 0; }
+
+  private slopeUnderBike(): number {
+    return this.terrain.slopeAt((this.rearWheel.getPosition().x + this.frontWheel.getPosition().x) / 2);
+  }
 
   private onWheelTouch(wheel: 'rear' | 'front'): void {
     if (this.landing) {
@@ -196,43 +265,92 @@ export class Bike {
       return;
     }
     if (this.airtime < LANDING.minAirtime) return;
-    const wp = (wheel === 'rear' ? this.rearWheel : this.frontWheel).getPosition();
-    const mid = (this.rearWheel.getPosition().x + this.frontWheel.getPosition().x) / 2;
-    const slope = this.terrain.slopeAt((wp.x + mid) / 2);
+    const wb = wheel === 'rear' ? this.rearWheel : this.frontWheel;
+    const slope = this.terrain.slopeAt(wb.getPosition().x);
+    // Impact = velocity component into the ground (normal = (-sin, cos) of the slope).
+    const v = this.frame.getLinearVelocity();
+    const impact = -(-Math.sin(slope) * v.x + Math.cos(slope) * v.y);
+    const angleDiff = wrapAngle(this.frame.getAngle() - slope);
+    // Steep one-wheel touchdown: start absorbing right away, not after the two-wheel window.
+    if (Math.abs(angleDiff) * (180 / Math.PI) > LANDING.goodAngle && Math.abs(angleDiff) * (180 / Math.PI) <= LANDING.maxLandingAngle) {
+      this.addSpin(-this.frame.getAngularVelocity() * MANUAL.landingSpinAbsorb);
+      this.absorbTimer = MANUAL.absorbTime;
+    }
     this.landing = {
       t: this.time,
-      angleDiff: wrapAngle(this.frame.getAngle() - slope),
+      angleDiff,
       first: wheel,
       airtime: this.airtime,
       rotation: this.airRotation,
+      impact,
     };
   }
 
   private finishLanding(wheelGap: number): void {
     const l = this.landing!;
     this.landing = null;
-    const forgiveness = this.tuning.landingForgiveness;
-    const quality = classifyLanding({ angleDiff: l.angleDiff / forgiveness, wheelGap, midTrick: this.midTrick() });
+    // The landing is consumed: the other wheel coming down later is not a second landing.
+    this.airtime = 0;
+    this.airRotation = 0;
+    const res = classifyLanding({
+      angleDiff: l.angleDiff, wheelGap, first: l.first, impact: l.impact,
+      midTrick: this.midTrick(), forgiveness: this.tuning.landingForgiveness,
+    });
     const deg = (l.angleDiff * 180) / Math.PI;
     this.debug.lastAngleDiffDeg = deg;
-    this.debug.lastQuality = quality;
-    this.events.push({ type: 'landing', quality, airtime: l.airtime, rotation: l.rotation, angleDiffDeg: deg });
+    this.debug.lastImpact = l.impact;
+    this.debug.lastQuality = res.quality;
+    this.events.push({ type: 'landing', quality: res.quality, airtime: l.airtime, rotation: l.rotation, angleDiffDeg: deg, impact: l.impact, cased: res.cased });
 
-    const slope = this.terrain.slopeAt(this.frame.getPosition().x);
-    if (quality === 'perfect') {
-      this.addVelocity(Math.cos(slope) * LANDING.perfectBoost, Math.sin(slope) * LANDING.perfectBoost);
-    } else if (quality === 'sloppy') {
-      for (const b of this.bodies()) b.setLinearVelocity(b.getLinearVelocity().clone().mul(LANDING.sloppySpeedKeep));
-      this.wobble = 1;
-    } else if (quality === 'crash') {
-      this.requestCrash('landing');
+    const slope = this.slopeUnderBike();
+    const along = (dv: number) => this.addVelocity(Math.cos(slope) * dv, Math.sin(slope) * dv);
+    if (res.quality === 'crash') {
+      this.requestCrash({ kind: 'landing', cause: res.cause!, impact: l.impact, angleDeg: deg });
+      return;
     }
+    if (res.cased) this.scaleVelocity(LANDING.caseSpeedKeep);
+    // One-wheel touchdown: the rider soaks up most of the pitch so it rolls into a manual.
+    if (res.quality === 'wheelie' || res.quality === 'nose') {
+      this.addSpin(-this.frame.getAngularVelocity() * MANUAL.landingSpinAbsorb);
+      this.absorbTimer = MANUAL.absorbTime;
+    }
+    if (res.quality === 'perfect') along(LANDING.perfectBoost);
+    else if (res.quality === 'good' && !res.cased) along(LANDING.goodBoost);
+    else if (res.quality === 'sloppy') { this.scaleVelocity(LANDING.sloppySpeedKeep); this.wobble = 1; }
   }
 
   private addVelocity(dx: number, dy: number): void {
     for (const b of this.bodies()) {
       const v = b.getLinearVelocity();
       b.setLinearVelocity(new Vec2(v.x + dx, v.y + dy));
+    }
+  }
+
+  private scaleVelocity(k: number): void {
+    for (const b of this.bodies()) b.setLinearVelocity(b.getLinearVelocity().clone().mul(k));
+  }
+
+  /** Total mass and centre of mass of bike + rider. */
+  private system(): { mass: number; com: Vec } {
+    let m = 0, x = 0, y = 0;
+    for (const b of this.bodies()) {
+      const bm = b.getMass(), c = b.getWorldCenter();
+      m += bm; x += c.x * bm; y += c.y * bm;
+    }
+    return { mass: m, com: { x: x / m, y: y / m } };
+  }
+
+  /**
+   * Adds a rigid rotation increment to the whole bike + rider about the shared
+   * centre of mass. This is how air spin is controlled: angular momentum moves
+   * as one, so the rider doesn't lag behind the frame.
+   */
+  private addSpin(dw: number): void {
+    const { com } = this.system();
+    for (const b of this.bodies()) {
+      const c = b.getWorldCenter(), v = b.getLinearVelocity();
+      b.setLinearVelocity(new Vec2(v.x - dw * (c.y - com.y), v.y + dw * (c.x - com.x)));
+      if (b !== this.rearWheel && b !== this.frontWheel) b.setAngularVelocity(b.getAngularVelocity() + dw);
     }
   }
 
@@ -250,59 +368,101 @@ export class Bike {
       return;
     }
     const t = this.tuning;
+    this.refreshContacts();
     const grounded = this.grounded;
+    const rearDown = this.contacts.rear > 0;
     const omega = this.frame.getAngularVelocity();
 
-    // Pedal: motor on the rear wheel. Released = freewheel.
-    if (c.pedal) {
+    // ---- Pedalling. Drive only reaches the ground through the rear tire.
+    this.pedalling = c.pedal;
+    if (c.pedal && rearDown) {
       this.rearJoint.enableMotor(true);
       this.rearJoint.setMaxMotorTorque(BIKE.pedalTorque * t.pedalTorque);
       this.rearJoint.setMotorSpeed(-(BIKE.topSpeed * t.topSpeed) / BIKE.wheelRadius);
-      this.crank -= (this.rearWheel.getAngularVelocity() / 2.75) * dt;
     } else {
       this.rearJoint.enableMotor(false);
     }
+    if (c.pedal) {
+      // Cranks follow the rear wheel through the gears (wheel ω < 0 when rolling forward).
+      const wheelW = this.rearWheel.getAngularVelocity() - omega;
+      const crankW = rearDown ? Math.min(wheelW / GEAR_RATIO, -2) : -BIKE.airCrankRate;
+      this.crank += crankW * dt;
+    } else {
+      // Freewheel: cranks settle level, near-side foot forward (BMX ready position).
+      const target = Math.round(this.crank / Math.PI) * Math.PI;
+      this.crank += (target - this.crank) * Math.min(1, dt * 6);
+    }
 
-    // On the ground, "forward" while pedalling is just pedalling (keyboard → does both);
-    // a dedicated forward lean (touch button / gamepad) shifts weight onto the nose.
-    // In the air, forward lean needs a fresh press after takeoff: holding the
-    // pedal key through a roller must not start a front flip on its own.
-    if (grounded) this.fwdArmed = !c.leanForward;
-    else if (!c.leanForward) this.fwdArmed = true;
-    const fwd = grounded ? c.leanForward && !c.pedal : c.leanForward && this.fwdArmed;
-    const leanInput = (fwd ? 1 : 0) - (c.leanBack ? 1 : 0);
-    this.lean += (leanInput - this.lean) * Math.min(1, dt * 10);
+    // ---- Lean: moves the rider body over the bike (springs), plus bar pull on the ground.
+    const leanInput = (c.leanForward ? 1 : 0) - (c.leanBack ? 1 : 0);
+    // Sprinting riders get over the front; an explicit lean overrides it.
+    // On one wheel without input the rider instinctively shifts against the tip-over.
+    let leanGoal = leanInput !== 0 ? leanInput : c.pedal && rearDown ? BIKE.sprintLean : 0;
+    if (leanInput === 0 && this.manual && Math.abs(this.manual.angleDeg) > MANUAL.minAngle * 2) {
+      leanGoal = this.manual.wheel === 'rear' ? 0.7 : -0.8;
+    }
+    this.lean += (leanGoal - this.lean) * Math.min(1, dt * 8);
 
-    if (grounded) {
-      // Weight shift: lean back lifts the front (positive torque in y-up space).
+    if (grounded && this.manual) {
+      // Manual / nose manual (arcade balance): cancel gravity's tipping moment about the
+      // wheel on the ground, so the angle is the player's to control. Lean steers it;
+      // with no input it settles back onto both wheels.
+      const contact = (this.manual.wheel === 'rear' ? this.rearWheel : this.frontWheel).getPosition();
+      let tGrav = 0;
+      for (const b of this.bodies()) tGrav += (b.getWorldCenter().x - contact.x) * -b.getMass() * -PHYSICS_G;
+      let tq = -tGrav * MANUAL.gravityAssist;
+      if (leanInput !== 0) tq += -leanInput * BIKE.groundLeanTorque;
+      else {
+        const a = (this.manual.angleDeg * Math.PI) / 180;
+        tq += -Math.sign(a) * BIKE.balanceMaxTorque * (this.manual.wheel === 'rear' ? 0.45 : 0.9) - MANUAL.settleStiffness * a;
+      }
+      tq -= BIKE.balanceKd * MANUAL.dampingScale * omega;
+      this.frame.applyTorque(tq, true);
+    } else if (grounded) {
       if (leanInput !== 0) {
         this.frame.applyTorque(-leanInput * BIKE.groundLeanTorque, true);
       } else {
         // Rider balance: keeps pedalling from looping the bike and settles bumps.
-        const err = wrapAngle(this.frame.getAngle() - this.terrain.slopeAt(this.frame.getPosition().x));
+        const err = wrapAngle(this.frame.getAngle() - this.slopeUnderBike());
         const tq = -(BIKE.balanceKp * err + BIKE.balanceKd * omega);
         this.frame.applyTorque(Math.max(-BIKE.balanceMaxTorque, Math.min(BIKE.balanceMaxTorque, tq)), true);
       }
-      this.frame.setAngularDamping(0);
     } else {
-      // Air: steer angular velocity toward a target spin rate.
-      const target = -leanInput * BIKE.airSpinRate * t.spinRate;
+      // Air: angular impulse toward the target spin rate; released = momentum bleeds off.
+      const sysW = omega;
       if (leanInput !== 0) {
-        const next = omega + Math.sign(target - omega) * Math.min(Math.abs(target - omega), BIKE.airSpinAccel * dt);
-        this.frame.setAngularVelocity(next);
-        this.frame.setAngularDamping(0);
+        const target = -leanInput * BIKE.airSpinRate * t.spinRate;
+        const dw = Math.sign(target - sysW) * Math.min(Math.abs(target - sysW), BIKE.airSpinAccel * dt);
+        this.addSpin(dw);
       } else {
-        this.frame.setAngularDamping(BIKE.airAngularDamping);
+        this.addSpin(-sysW * Math.min(1, BIKE.airAngularDamping * dt));
       }
     }
 
-    // Hop: hold to charge, release to pop. Coyote time of 0.1 s after leaving the ground.
+    if (this.absorbTimer > 0) {
+      this.absorbTimer -= dt;
+      this.addSpin(-this.frame.getAngularVelocity() * Math.min(1, MANUAL.absorbRate * dt));
+      // The rider's torso stops rotating relative to the bike too.
+      this.rider.setAngularVelocity(this.frame.getAngularVelocity());
+    }
+
+    if (this.braking) {
+      // Brake torque on each wheel relative to the frame, capped so it never reverses the spin.
+      for (const w of [this.rearWheel, this.frontWheel]) {
+        const rel = w.getAngularVelocity() - omega;
+        const tq = Math.max(-BIKE.brakeTorque, Math.min(BIKE.brakeTorque, (-rel * w.getInertia()) / dt));
+        w.applyTorque(tq, true);
+        this.frame.applyTorque(-tq, true);
+      }
+    }
+
+    // ---- Hop: hold to charge, release to pop. Coyote time 0.1 s.
     const canHop = this.groundedTime > -0.1;
     if (c.jump && canHop) this.hopCharge = Math.min(BIKE.hopChargeTime, this.hopCharge + dt);
     if (!c.jump && this.prevJump && this.hopCharge > 0 && canHop) {
       const k = this.hopCharge / BIKE.hopChargeTime;
       const sp = BIKE.hopMinSpeed + (BIKE.hopMaxSpeed - BIKE.hopMinSpeed) * k;
-      const slope = this.terrain.slopeAt(this.frame.getPosition().x);
+      const slope = this.slopeUnderBike();
       this.addVelocity(-Math.sin(slope) * sp, Math.cos(slope) * sp);
       this.events.push({ type: 'hop', charge: k });
       this.groundedTime = -1;
@@ -310,42 +470,64 @@ export class Bike {
     if (!c.jump) this.hopCharge = 0;
     this.prevJump = c.jump;
 
-    // Pump: a press while rolling downhill turns the drop into speed.
+    // ---- Pump: down on the back side of a roller gains speed, on the face loses it.
     this.pumpCooldown = Math.max(0, this.pumpCooldown - dt);
     const v = this.frame.getLinearVelocity();
     if (c.pump && grounded) {
-      const slope = this.terrain.slopeAt(this.frame.getPosition().x);
+      const slope = this.slopeUnderBike();
       this.frame.applyForceToCenter(new Vec2(Math.sin(slope) * BIKE.pumpDownForce, -Math.cos(slope) * BIKE.pumpDownForce), true);
-      if (!this.prevPump && this.pumpCooldown === 0 && v.y < -BIKE.pumpMinDescent && v.x > 0) {
+      if (!this.prevPump && this.pumpCooldown === 0 && v.x > 0) {
         const s = Math.hypot(v.x, v.y);
-        this.addVelocity((v.x / s) * BIKE.pumpImpulse, (v.y / s) * BIKE.pumpImpulse);
-        this.pumpCooldown = BIKE.pumpCooldown;
-        this.events.push({ type: 'pump' });
+        if (v.y < -BIKE.pumpMinDescent) {
+          this.addVelocity((v.x / s) * BIKE.pumpImpulse, (v.y / s) * BIKE.pumpImpulse);
+          this.pumpCooldown = BIKE.pumpCooldown;
+          this.events.push({ type: 'pump', good: true });
+        } else if (v.y > BIKE.pumpMinDescent) {
+          this.addVelocity(-(v.x / s) * BIKE.pumpPenalty, -(v.y / s) * BIKE.pumpPenalty);
+          this.pumpCooldown = BIKE.pumpCooldown;
+          this.events.push({ type: 'pump', good: false });
+        }
       }
     }
     this.prevPump = c.pump;
-    const tuckTarget = c.pump ? 1 : this.hopCharge / BIKE.hopChargeTime * 0.8;
+    const tuckTarget = c.pump ? 1 : (this.hopCharge / BIKE.hopChargeTime) * 0.8;
     this.tuck += (tuckTarget - this.tuck) * Math.min(1, dt * 12);
 
-    // Rolling resistance depends on the surface under the bike.
-    if (grounded && v.x > 0.5) {
+    // ---- Limb springs follow lean / tuck, with a hip bob while sprinting.
+    const bob = c.pedal && rearDown ? Math.abs(Math.sin(this.crank)) * BIKE.pedalBobAmount : 0;
+    const tgt = riderTarget(this.lean, this.tuck, bob);
+    this.legs.setLength(dist(GEOM.bottomBracket, tgt.hip));
+    this.arms.setLength(dist(GEOM.grips, tgt.shoulder));
+    this.core.setLength(dist(GEOM.headTubeTop, tgt.hip));
+
+    // ---- Posture: the torso holds its angle relative to the bike (reaction goes into the frame).
+    const torsoTarget = Math.atan2(tgt.shoulder.y - tgt.hip.y, tgt.shoulder.x - tgt.hip.x) - Math.atan2(GEOM.shoulderLocal.y, GEOM.shoulderLocal.x);
+    const err = wrapAngle(this.frame.getAngle() + torsoTarget - this.rider.getAngle());
+    const posture = BIKE.postureStiffness * err + BIKE.postureDamping * (omega - this.rider.getAngularVelocity());
+    this.rider.applyTorque(posture, true);
+    this.frame.applyTorque(-posture, true);
+
+    // ---- Resistance: rolling (surface dependent) and air drag.
+    const mass = this.system().mass;
+    if (grounded && Math.abs(v.x) > 0.3) {
       const drag = SURFACE_DRAG[this.terrain.surfaceAt(this.frame.getPosition().x)];
-      const mass = this.frame.getMass() + this.rearWheel.getMass() + this.frontWheel.getMass();
       this.frame.applyForceToCenter(new Vec2(-drag * mass * Math.sign(v.x), 0), true);
     }
+    const sp = Math.hypot(v.x, v.y);
+    if (sp > 0.1) this.frame.applyForceToCenter(new Vec2(-BIKE.airDrag * sp * v.x, -BIKE.airDrag * sp * v.y), true);
 
     this.wobble = Math.max(0, this.wobble - dt / LANDING.wobbleTime);
   }
 
-  /** After world.step: air tracking, landings, crashes, checkpoints. */
+  /** After world.step: air tracking, landings, manuals, crashes, checkpoints. */
   postStep(dt: number): void {
     if (this.state === 'crashed') {
       this.crashTimer += dt;
       if (this.crashTimer >= CRASH.respawnDelay) this.respawn();
       return;
     }
-
     if (this.pendingCrash) { this.crash(this.pendingCrash); return; }
+    this.refreshContacts();
 
     const angle = this.frame.getAngle();
     if (this.grounded) {
@@ -358,8 +540,20 @@ export class Bike {
     }
     this.lastAngle = angle;
 
-    // A single-wheel touchdown that never gets the second wheel is still a landing.
+    // A one-wheel touchdown whose second wheel doesn't follow in time is still a landing.
     if (this.landing && this.time - this.landing.t > LANDING.bothWheelsWindow) this.finishLanding(Infinity);
+
+    // Manual / nose manual: on one wheel, nose up or down. Tipping past the limit is a crash.
+    const onlyRear = this.contacts.rear > 0 && this.contacts.front === 0;
+    const onlyFront = this.contacts.front > 0 && this.contacts.rear === 0;
+    const diff = (wrapAngle(angle - this.slopeUnderBike()) * 180) / Math.PI;
+    if (onlyRear && diff > MANUAL.minAngle) this.manual = { wheel: 'rear', angleDeg: diff };
+    else if (onlyFront && diff < -MANUAL.minAngle) this.manual = { wheel: 'front', angleDeg: diff };
+    else if (this.bothWheelsDown || !this.grounded) this.manual = null;
+    if (this.manual && !this.landing) {
+      if (this.manual.wheel === 'rear' && diff > MANUAL.wheelieTipAngle) this.requestCrash({ kind: 'tipBack', angleDeg: diff });
+      if (this.manual.wheel === 'front' && diff < -MANUAL.noseTipAngle) this.requestCrash({ kind: 'tipForward', angleDeg: diff });
+    }
 
     this.debug.airtime = this.airtime;
     this.debug.rotation = this.airRotation;
@@ -372,24 +566,34 @@ export class Bike {
     }
   }
 
-  // ---------------------------------------------------------------- crash & respawn
+  // ---------------------------------------------------------------- pose, crash, respawn
 
-  pose(): RiderPose {
-    const p = localPose({ lean: this.lean, tuck: this.tuck, crank: this.crank, wobble: this.wobble, time: this.time });
-    return poseToWorld(p, this.frame.getPosition(), this.frame.getAngle());
+  /** Skeleton from body transforms (pass interpolated transforms when rendering). */
+  pose(frame: Xf = xf(this.frame), rider: Xf = xf(this.rider)): RiderPose {
+    return buildPose(frame, rider, this.crank);
   }
 
-  crash(reason: 'landing' | 'head' | 'pit'): void {
+  crash(reason: CrashReason): void {
     if (this.state === 'crashed') return;
     const pose = this.pose();
-    for (const f of this.riderFixtures) this.frame.destroyFixture(f);
-    this.riderFixtures = [];
-    this.ragdoll = new Ragdoll(this.world, pose, this.frame.getLinearVelocity(), this.frame.getAngularVelocity(), this.id);
+    const v = this.rider.getLinearVelocity();
+    const w = this.rider.getAngularVelocity();
+    this.world.destroyBody(this.rider); // also removes the limb joints
+    this.ragdoll = new Ragdoll(this.world, pose, v, w, this.id);
+    this.rearJoint.enableMotor(false);
     this.state = 'crashed';
     this.crashTimer = 0;
+    this.crashes++;
     this.pendingCrash = null;
     this.landing = null;
+    this.manual = null;
+    this.debug.lastCrash = reason;
     this.events.push({ type: 'crash', reason });
+  }
+
+  /** Skip the rest of the crash wait (tap to respawn). */
+  skipCrash(): void {
+    if (this.state === 'crashed' && this.crashTimer >= CRASH.skipAfter) this.respawn();
   }
 
   respawn(index = this.checkpointIndex): void {
@@ -398,26 +602,54 @@ export class Bike {
     this.destroyBike();
     const x = this.terrain.checkpoints[index];
     this.checkpointIndex = index;
-    this.build(x, (this.terrain.heightAt(x) ?? 0) + BIKE.wheelRadius + 0.08, CRASH.respawnSpeed);
     this.state = 'riding';
+    this.build(x, (this.terrain.heightAt(x) ?? 0) + BIKE.wheelRadius + 0.05, index === 0 ? 0 : CRASH.respawnSpeed);
     this.lean = this.tuck = this.wobble = 0;
     this.hopCharge = 0;
     this.pendingCrash = null;
     this.events.push({ type: 'respawn', checkpoint: index });
   }
 
-  /** Wheel world transforms for rendering. */
-  wheels(): { rear: { p: Vec; a: number }; front: { p: Vec; a: number } } {
-    return {
-      rear: { p: this.rearWheel.getPosition(), a: this.rearWheel.getAngle() },
-      front: { p: this.frontWheel.getPosition(), a: this.frontWheel.getAngle() },
-    };
-  }
+  /** Rim brakes (used after the finish line). */
+  brake(on: boolean): void { this.braking = on; }
 
-  /** Suspension compression of each wheel in meters (debug readout). */
+  /** Suspension compression of each tire in meters (debug readout). */
   suspension(): { rear: number; front: number } {
     return { rear: this.rearJoint.getJointTranslation(), front: this.frontJoint.getJointTranslation() };
   }
 
-  static readonly geom = GEOM;
+  /** Current rider body offset from its target, in cm (shows how much the limbs are absorbing). */
+  limbCompression(): number {
+    return (this.legs.getLength() - dist(GEOM.bottomBracket, this.frame.getLocalPoint(this.rider.getPosition()))) * 100;
+  }
+
+  /** Every body that belongs to this rider (for render interpolation). */
+  allBodies(): Body[] {
+    const list = [this.frame, this.rearWheel, this.frontWheel];
+    if (this.state === 'riding') list.push(this.rider);
+    if (this.ragdoll) for (const p of this.ragdoll.parts) list.push(p.body);
+    return list;
+  }
+}
+
+export function xf(b: Body): Xf {
+  const p = b.getPosition();
+  return { p: { x: p.x, y: p.y }, a: b.getAngle() };
+}
+
+function dist(a: Vec, b: Vec): number { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+function polygonArea(pts: Vec[]): number {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return Math.abs(a) / 2;
+}
+
+function shapeArea(s: Box | Circle): number {
+  if (s instanceof Circle) return Math.PI * s.getRadius() ** 2;
+  const v = (s as unknown as { m_vertices: Vec[] }).m_vertices;
+  return polygonArea(v);
 }

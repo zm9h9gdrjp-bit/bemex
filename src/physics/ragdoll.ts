@@ -5,6 +5,8 @@ import type { Vec } from './terrain';
 import { CAT, MASK } from './collision';
 import type { FixtureTag } from './terrain';
 
+function wrap(a: number): number { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
 export interface RagdollPart {
   body: Body;
   /** Bone name used by the renderer. */
@@ -54,14 +56,21 @@ export class Ragdoll {
     head.setLinearVelocity(new Vec2(vel.x, vel.y));
     this.parts.push({ body: head, bone: 'head', halfLength: GEOM.headRadius, halfWidth: GEOM.headRadius });
 
-    const pin = (a: Body, b: Body, at: Vec, lo: number, hi: number) =>
-      world.createJoint(new RevoluteJoint({ enableLimit: true, lowerAngle: lo, upperAngle: hi }, a, b, new Vec2(at.x, at.y)));
+    // Limits are anatomical (relative angle of child bone vs parent bone, y-up):
+    // knees fold the shin backwards, elbows fold the forearm forward/up, neck and
+    // hips have a limited swing. Planck measures limits from the creation pose,
+    // so each range is shifted by the current relative angle.
     const D = Math.PI / 180;
-    pin(torso, head, pose.neck, -40 * D, 40 * D);
-    pin(torso, thigh, pose.hip, -120 * D, 30 * D);
-    pin(thigh, shin, pose.knee, 0, 140 * D);
-    pin(torso, upper, pose.shoulder, -160 * D, 60 * D);
-    pin(upper, fore, pose.elbow, -140 * D, 0);
+    const pin = (a: Body, b: Body, at: Vec, lo: number, hi: number) => {
+      const rel = wrap(b.getAngle() - a.getAngle());
+      const lower = Math.min(lo - rel, 0), upper = Math.max(hi - rel, 0);
+      world.createJoint(new RevoluteJoint({ enableLimit: true, lowerAngle: lower, upperAngle: upper }, a, b, new Vec2(at.x, at.y)));
+    };
+    pin(torso, head, pose.neck, -35 * D, 35 * D);
+    pin(torso, thigh, pose.hip, -150 * D, -10 * D);
+    pin(thigh, shin, pose.knee, -150 * D, 0);
+    pin(torso, upper, pose.shoulder, -200 * D, 40 * D);
+    pin(upper, fore, pose.elbow, 0, 150 * D);
   }
 
   get torso(): Body { return this.parts[0].body; }

@@ -75,11 +75,14 @@ export class TerrainView extends Container {
       // Pebbles scattered on the face for texture (seeded so they stay put).
       let seed = Math.floor(a.x * 13.37) | 0;
       const rnd = () => ((seed = (seed * 1664525 + 1013904223) | 0) >>> 0) / 4294967296;
+      // Drawn in centimetres on a 1/100-scaled layer so small ellipses stay round.
+      const pebbles = new Graphics();
+      pebbles.scale.set(0.01);
       for (let x = a.x + 0.5; x < b.x - 0.5; x += 0.7 + rnd() * 1.4) {
         const y = sampleY(pts, x) - 0.15 - rnd() * (FACE_DEPTH - 0.3);
-        g.ellipse(x, y, 0.06 + rnd() * 0.06, 0.04 + rnd() * 0.03).fill({ color: pal.faceDeep, alpha: 0.7 });
+        pebbles.ellipse(x * 100, y * 100, 6 + rnd() * 6, 4 + rnd() * 3).fill({ color: pal.faceDeep, alpha: 0.7 });
       }
-      this.addChild(g);
+      this.addChild(g, pebbles);
     }
   }
 }

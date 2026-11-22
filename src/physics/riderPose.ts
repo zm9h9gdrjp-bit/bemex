@@ -1,40 +1,54 @@
 /**
- * Rider skeleton pose, computed from the bike transform plus a few control
- * values (lean, tuck, crank angle). The renderer draws it and the crash code
- * turns it into ragdoll bodies, so what you see is exactly what falls.
+ * Bike geometry and rider skeleton.
  *
- * All local coordinates are relative to the frame origin (between the axles,
- * at axle height), x forward, y up.
+ * Bike-local coordinates: origin midway between the axles at axle height,
+ * x forward, y up, meters. Numbers follow a 20" race BMX: 0.99 m wheelbase,
+ * 345 mm chainstay, 74° head angle, 71° seat angle, 8.5" bar rise, 25/9 gearing.
+ *
+ * The rider is 1.75 m tall (8 heads). Hip and shoulder come from the physical
+ * rider body; knees, feet, elbows and hands are placed with two-bone IK so the
+ * feet stay on the pedals and the hands stay on the grips.
  */
 import type { Vec } from './terrain';
 
+const DEG = Math.PI / 180;
+
 export const GEOM = {
-  rearAxle: { x: -0.52, y: 0 },
-  frontAxle: { x: 0.52, y: 0 },
-  bottomBracket: { x: -0.07, y: 0.03 },
-  seat: { x: -0.3, y: 0.44 },
+  wheelRadius: 0.258, // 20 x 1.75" tire
+  rearAxle: { x: -0.495, y: 0 },
+  frontAxle: { x: 0.495, y: 0 },
+  bottomBracket: { x: -0.15, y: 0.03 },
+  seatCluster: { x: -0.24, y: 0.295 },
+  seat: { x: -0.27, y: 0.345 },
   headTubeTop: { x: 0.36, y: 0.44 },
-  headTubeBottom: { x: 0.42, y: 0.24 },
-  grips: { x: 0.3, y: 0.8 },
-  crankLength: 0.17,
-  thigh: 0.46,
-  shin: 0.46,
+  headTubeBottom: { x: 0.4, y: 0.3 },
+  stem: { x: 0.38, y: 0.5 },
+  grips: { x: 0.3, y: 0.7 },
+  crankLength: 0.175,
+  chainringTeeth: 25,
+  cogTeeth: 9,
+  /** Chain pitch 1/2" → pitch radius = teeth · 12.7 mm / 2π. */
+  chainringRadius: (25 * 0.0127) / (2 * Math.PI),
+  cogRadius: (9 * 0.0127) / (2 * Math.PI),
+  headAngle: 74 * DEG,
+  seatAngle: 71 * DEG,
+
+  // Rider (1.75 m).
+  thigh: 0.45,
+  shin: 0.45,
   upperArm: 0.3,
-  forearm: 0.29,
+  forearm: 0.28,
   torso: 0.52,
-  neck: 0.13,
-  headRadius: 0.13,
+  neck: 0.1,
+  headRadius: 0.11,
+  /** Shoulder relative to hip in the rider body's own frame (neutral torso lean 58°). */
+  shoulderLocal: { x: Math.cos(58 * DEG) * 0.52, y: Math.sin(58 * DEG) * 0.52 },
 };
 
-export interface PoseControls {
-  /** -1 = full lean back, +1 = full lean forward. Smoothed by the caller. */
-  lean: number;
-  /** 0..1, crouch for pumping / hop charge. */
-  tuck: number;
-  crank: number;
-  wobble: number;
-  time: number;
-}
+/** Crank turns once per (chainring / cog) wheel turns. */
+export const GEAR_RATIO = GEOM.chainringTeeth / GEOM.cogTeeth;
+
+export interface Xf { p: Vec; a: number }
 
 export interface RiderPose {
   hip: Vec; knee: Vec; foot: Vec;
@@ -45,47 +59,62 @@ export interface RiderPose {
   pedal: Vec; pedalFar: Vec;
 }
 
-/** Two-bone IK. `bendSign` picks which side the middle joint bends to. */
+/**
+ * Two-bone IK. `bendSign` +1 bends the middle joint counter-clockwise from the
+ * root→target line (knees forward when the target is below), -1 the other way.
+ * Out of reach: the limb straightens and the end still lands on the target, so
+ * feet never visibly leave the pedals.
+ */
 export function solveIK(a: Vec, target: Vec, l1: number, l2: number, bendSign: number): { mid: Vec; end: Vec } {
-  let dx = target.x - a.x, dy = target.y - a.y;
-  let d = Math.hypot(dx, dy);
-  const maxD = l1 + l2 - 1e-4;
-  if (d > maxD) { dx *= maxD / d; dy *= maxD / d; d = maxD; }
-  const minD = Math.abs(l1 - l2) + 1e-4;
-  if (d < minD) d = minD;
+  const dx = target.x - a.x, dy = target.y - a.y;
+  const d = Math.hypot(dx, dy);
   const base = Math.atan2(dy, dx);
-  const cos = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
+  if (d >= l1 + l2) {
+    const k = l1 / (l1 + l2);
+    return { mid: { x: a.x + dx * k, y: a.y + dy * k }, end: { ...target } };
+  }
+  const dd = Math.max(d, Math.abs(l1 - l2) + 1e-4);
+  const cos = (l1 * l1 + dd * dd - l2 * l2) / (2 * l1 * dd);
   const off = Math.acos(Math.max(-1, Math.min(1, cos))) * bendSign;
-  const mid = { x: a.x + Math.cos(base + off) * l1, y: a.y + Math.sin(base + off) * l1 };
-  return { mid, end: { x: a.x + dx, y: a.y + dy } };
+  return { mid: { x: a.x + Math.cos(base + off) * l1, y: a.y + Math.sin(base + off) * l1 }, end: { ...target } };
 }
 
-/** Pose in bike-local space. */
-export function localPose(c: PoseControls): RiderPose {
-  const g = GEOM;
-  const back = Math.min(0, c.lean), fwd = Math.max(0, c.lean);
-  const wob = Math.sin(c.time * 38) * 0.05 * c.wobble;
+export function toWorld(p: Vec, xf: Xf): Vec {
+  const c = Math.cos(xf.a), s = Math.sin(xf.a);
+  return { x: xf.p.x + p.x * c - p.y * s, y: xf.p.y + p.x * s + p.y * c };
+}
 
-  const hip = {
-    x: -0.12 + back * 0.24 + fwd * 0.14 + wob,
-    y: 0.74 - c.tuck * 0.2 + back * 0.06 + fwd * 0.04,
+/** Pedal positions in bike-local space for a crank angle (radians, y-up; decreasing = forward). */
+export function pedals(crank: number): { near: Vec; far: Vec } {
+  const bb = GEOM.bottomBracket, r = GEOM.crankLength;
+  return {
+    near: { x: bb.x + Math.cos(crank) * r, y: bb.y + Math.sin(crank) * r },
+    far: { x: bb.x - Math.cos(crank) * r, y: bb.y - Math.sin(crank) * r },
   };
-  // Torso leans further forward when leaning forward or tucking.
-  const torsoAngle = (58 + fwd * 14 - back * 8 - c.tuck * 16) * (Math.PI / 180);
-  const shoulder = { x: hip.x + Math.cos(torsoAngle) * g.torso, y: hip.y + Math.sin(torsoAngle) * g.torso };
-  const neck = { x: shoulder.x + Math.cos(torsoAngle + 0.15) * g.neck, y: shoulder.y + Math.sin(torsoAngle + 0.15) * g.neck };
-  const head = { x: neck.x + 0.06, y: neck.y + 0.1 };
+}
 
-  const bb = g.bottomBracket;
-  const pedal = { x: bb.x + Math.cos(c.crank) * g.crankLength, y: bb.y + Math.sin(c.crank) * g.crankLength };
-  const pedalFar = { x: bb.x - Math.cos(c.crank) * g.crankLength, y: bb.y - Math.sin(c.crank) * g.crankLength };
+/** Full skeleton in world space from the frame and rider-body transforms. */
+export function buildPose(frame: Xf, rider: Xf, crank: number): RiderPose {
+  const g = GEOM;
+  const hip = rider.p;
+  const shoulder = toWorld(g.shoulderLocal, rider);
+  const torsoA = Math.atan2(shoulder.y - hip.y, shoulder.x - hip.x);
+  const neck = { x: shoulder.x + Math.cos(torsoA + 0.2) * g.neck, y: shoulder.y + Math.sin(torsoA + 0.2) * g.neck };
+  // Head up, looking ahead: sits above the neck, nudged forward along the bike.
+  const up = rider.a + Math.PI / 2;
+  const head = { x: neck.x + Math.cos(up) * 0.1 + Math.cos(rider.a) * 0.05, y: neck.y + Math.sin(up) * 0.1 + Math.sin(rider.a) * 0.05 };
 
-  // Knees bend forward (+x): bendSign depends on hip→foot direction (pointing down).
-  const leg = solveIK(hip, { x: pedal.x, y: pedal.y + 0.04 }, g.thigh, g.shin, 1);
-  const legFar = solveIK(hip, { x: pedalFar.x, y: pedalFar.y + 0.04 }, g.thigh, g.shin, 1);
-  // Elbows bend down/back.
-  const arm = solveIK(shoulder, g.grips, g.upperArm, g.forearm, -1);
-  const armFar = solveIK(shoulder, { x: g.grips.x - 0.02, y: g.grips.y + 0.01 }, g.upperArm, g.forearm, -1);
+  const pd = pedals(crank);
+  const pedal = toWorld(pd.near, frame), pedalFar = toWorld(pd.far, frame);
+  // Foot sits on top of the pedal (ankle ~4 cm above the spindle).
+  const lift = (p: Vec) => ({ x: p.x - Math.sin(frame.a) * 0.04, y: p.y + Math.cos(frame.a) * 0.04 });
+  const leg = solveIK(hip, lift(pedal), g.thigh, g.shin, 1);
+  const legFar = solveIK(hip, lift(pedalFar), g.thigh, g.shin, 1);
+
+  const grip = toWorld(g.grips, frame);
+  const gripFar = toWorld({ x: g.grips.x - 0.015, y: g.grips.y + 0.01 }, frame);
+  const arm = solveIK(shoulder, grip, g.upperArm, g.forearm, -1);
+  const armFar = solveIK(shoulder, gripFar, g.upperArm, g.forearm, -1);
 
   return {
     hip, knee: leg.mid, foot: leg.end, kneeFar: legFar.mid, footFar: legFar.end,
@@ -94,13 +123,17 @@ export function localPose(c: PoseControls): RiderPose {
   };
 }
 
-export function toWorld(p: Vec, pos: Vec, angle: number): Vec {
-  const c = Math.cos(angle), s = Math.sin(angle);
-  return { x: pos.x + p.x * c - p.y * s, y: pos.y + p.x * s + p.y * c };
-}
-
-export function poseToWorld(pose: RiderPose, pos: Vec, angle: number): RiderPose {
-  const out = {} as RiderPose;
-  for (const k of Object.keys(pose) as (keyof RiderPose)[]) out[k] = toWorld(pose[k], pos, angle);
-  return out;
+/**
+ * Where the rider's hip and shoulder want to be, in bike-local space, for a
+ * given lean (-1 back … +1 forward) and tuck (0 … 1). These targets drive the
+ * spring "limbs" that hold the rider body on the bike.
+ */
+export function riderTarget(lean: number, tuck: number, bob: number): { hip: Vec; shoulder: Vec } {
+  const back = Math.min(0, lean), fwd = Math.max(0, lean);
+  const hip = {
+    x: -0.14 + back * 0.24 + fwd * 0.15,
+    y: 0.76 - tuck * 0.2 + back * 0.02 + fwd * 0.03 + bob,
+  };
+  const torsoA = (58 + fwd * 12 - back * 6 - tuck * 14) * DEG;
+  return { hip, shoulder: { x: hip.x + Math.cos(torsoA) * GEOM.torso, y: hip.y + Math.sin(torsoA) * GEOM.torso } };
 }

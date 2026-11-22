@@ -6,18 +6,20 @@
 export type Action =
   | 'pedal' | 'leanBack' | 'leanForward' | 'jump' | 'pump'
   | 'trick1' | 'trick2' | 'trick3' | 'boost'
-  | 'pause' | 'dev' | 'debugDraw' | 'debugInfo' | 'respawn';
+  | 'pause' | 'dev' | 'debugDraw' | 'debugInfo' | 'debugSensors' | 'debugSlow' | 'respawn';
 
+/** Keyboard map (update v2): arrows up/down for hop/pump, → / D pedal, A/Q and E/F lean. */
 const KEYMAP: Record<string, Action[]> = {
-  ArrowRight: ['pedal', 'leanForward'], KeyD: ['pedal', 'leanForward'],
-  ArrowLeft: ['leanBack'], KeyA: ['leanBack'],
+  ArrowRight: ['pedal'], KeyD: ['pedal'],
+  KeyA: ['leanBack'], KeyQ: ['leanBack'], ArrowLeft: ['leanBack'],
+  KeyE: ['leanForward'], KeyF: ['leanForward'],
   ArrowUp: ['jump'], KeyW: ['jump'],
   ArrowDown: ['pump'], KeyS: ['pump'],
   KeyJ: ['trick1'], KeyK: ['trick2'], KeyL: ['trick3'],
   Space: ['boost'],
   Escape: ['pause'], KeyP: ['pause'],
   Backquote: ['dev'],
-  F2: ['debugDraw'], F3: ['debugInfo'],
+  F2: ['debugDraw'], F3: ['debugInfo'], F4: ['debugSensors'], F6: ['debugSlow'],
   KeyR: ['respawn'],
 };
 

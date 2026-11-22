@@ -8,17 +8,22 @@ import { WorldManifold } from 'planck';
  */
 export class DebugDraw extends Graphics {
   enabled = false;
+  /** Draw only the rider's crash sensors (head, torso, hips, hands, knees). */
+  sensorsOnly = false;
   private wm = new WorldManifold();
 
-  draw(world: World): void {
+  /** `lift` shifts the overlay up so it lines up with the drawn rider (rut offset). */
+  draw(world: World, lift = 0): void {
     this.clear();
+    this.position.y = lift;
+    if (this.sensorsOnly) { this.drawSensors(world); return; }
     if (!this.enabled) return;
 
     for (let b = world.getBodyList(); b; b = b.getNext()) {
       const xf = b.getTransform();
       const color = b.isStatic() ? 0x3ddc84 : b.isAwake() ? 0xffb000 : 0x8a8a8a;
       for (let f = b.getFixtureList(); f; f = f.getNext()) {
-        this.drawShape(f.getShape(), xf, color);
+        this.drawShape(f.getShape(), xf, f.isSensor() ? 0xff4fd8 : color);
       }
       const c = b.getWorldCenter();
       this.circle(c.x, c.y, 0.03).fill(0xffffff);
@@ -38,6 +43,16 @@ export class DebugDraw extends Graphics {
         if (!p) continue;
         this.circle(p.x, p.y, 0.05).fill(0xff3b30);
         this.moveTo(p.x, p.y).lineTo(p.x + n.x * 0.4, p.y + n.y * 0.4).stroke({ width: 0.02, color: 0xff3b30 });
+      }
+    }
+  }
+
+  private drawSensors(world: World): void {
+    for (let b = world.getBodyList(); b; b = b.getNext()) {
+      const xf = b.getTransform();
+      for (let f = b.getFixtureList(); f; f = f.getNext()) {
+        if (!f.isSensor()) continue;
+        this.drawShape(f.getShape(), xf, 0xff4fd8);
       }
     }
   }
